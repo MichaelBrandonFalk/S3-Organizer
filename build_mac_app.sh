@@ -4,11 +4,18 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PY="$ROOT_DIR/s3_copy_desktop_app/.venv/bin/python3"
 PYINSTALLER="$ROOT_DIR/s3_copy_desktop_app/.venv/bin/pyinstaller"
+if [[ ! -x "$PYINSTALLER" ]]; then
+  VENV_PY="$ROOT_DIR/../s3_copy_desktop_app/.venv/bin/python3"
+  PYINSTALLER="$ROOT_DIR/../s3_copy_desktop_app/.venv/bin/pyinstaller"
+fi
 ICON_PATH="$ROOT_DIR/assets/s3organizer.icns"
+if [[ ! -f "$ICON_PATH" ]]; then
+  ICON_PATH="$ROOT_DIR/s3organizer.icns"
+fi
 
 if [[ ! -x "$PYINSTALLER" ]]; then
   echo "PyInstaller not found in venv. Install with:"
-  echo "  $ROOT_DIR/s3_copy_desktop_app/.venv/bin/pip install pyinstaller"
+  echo "  $ROOT_DIR/../s3_copy_desktop_app/.venv/bin/pip install pyinstaller"
   exit 1
 fi
 

@@ -80,6 +80,44 @@ def object_exists(s3_client, object_ref: S3ObjectRef) -> bool:
         raise map_aws_error(error) from error
 
 
+def list_objects_under_prefix(
+    s3_client,
+    bucket: str,
+    prefix: str,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> list[S3ObjectRef]:
+    objects: list[S3ObjectRef] = []
+    continuation_token: str | None = None
+
+    while True:
+        try:
+            request_kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+            if continuation_token:
+                request_kwargs["ContinuationToken"] = continuation_token
+
+            response = _call_with_retries(
+                lambda: s3_client.list_objects_v2(**request_kwargs),
+                progress_callback=progress_callback,
+                operation_name="list_objects_v2",
+            )
+        except (NoCredentialsError, EndpointConnectionError, BotoCoreError, ClientError) as error:
+            raise map_aws_error(error) from error
+
+        for entry in response.get("Contents", []):
+            key = str(entry.get("Key", "")).strip()
+            if not key or key.endswith("/"):
+                continue
+            objects.append(S3ObjectRef(bucket=bucket, key=key))
+
+        _notify_progress(progress_callback, f"Scanned {len(objects)} object(s) so far...")
+
+        if not response.get("IsTruncated"):
+            break
+        continuation_token = response.get("NextContinuationToken")
+
+    return objects
+
+
 def copy_object(
     s3_client,
     source: S3ObjectRef,

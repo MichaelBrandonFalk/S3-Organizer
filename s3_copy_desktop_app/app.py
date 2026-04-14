@@ -35,6 +35,7 @@ from .s3_service import (
     copy_object,
     create_s3_client,
     delete_object,
+    list_objects_under_prefix,
     object_exists,
     upload_local_file,
 )
@@ -53,6 +54,7 @@ from .validators import (
 APP_TITLE = os.getenv("S3_APP_TITLE", "s3Organizer")
 APP_FILE_SLUG = os.getenv("S3_APP_FILE_SLUG", "s3Organizer")
 SIMPLIFIED_BULK_REQUIRE_DRY_RUN = os.getenv("S3_SIMPLIFIED_BULK_REQUIRE_DRY_RUN", "1") != "0"
+POWER_MODE = APP_FILE_SLUG.lower() == "powers3browser"
 WINDOW_WIDTH = 760
 WINDOW_HEIGHT = 940
 VOICE_COMMAND = ["say", "-v", "Samantha", "Copy Complete"]
@@ -211,6 +213,13 @@ class SimplifiedBulkCopyReportRow:
     destination_uri: str
     status: str
     message: str
+
+
+@dataclass
+class FolderCopyPreview:
+    object_count: int
+    first_source_uri: str
+    first_destination_uri: str
 
 
 class DeferredOverwriteError(UserVisibleError):
@@ -1130,6 +1139,11 @@ class S3CopyApp:
         self.simplified_bulk_summary_var = tk.StringVar(
             value="Load a CSV with source_uri and destination_uri columns. Resume details appear here if a prior run exists."
         )
+        self.folder_copy_source_uri_var = tk.StringVar()
+        self.folder_copy_dest_uri_var = tk.StringVar()
+        self.folder_copy_summary_var = tk.StringVar(
+            value="Provide source and destination S3 folder URIs. Relative paths under the source folder will be preserved."
+        )
         self.desired_move_folder_var = tk.StringVar()
         self.desired_name_var = tk.StringVar()
         self.desired_caption_name_var = tk.StringVar()
@@ -1278,14 +1292,19 @@ class S3CopyApp:
         self.direct_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.rename_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.simplified_bulk_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
+        self.folder_copy_mode_frame = ttk.Frame(self.mode_notebook, padding=6) if POWER_MODE else None
         self.mode_notebook.add(self.s3_mode_frame, text="S3 Copy")
         self.mode_notebook.add(self.direct_mode_frame, text="Direct Upload")
         self.mode_notebook.add(self.rename_mode_frame, text="Rename in Destination")
         self.mode_notebook.add(self.simplified_bulk_mode_frame, text="Simplified Bulk Copy")
+        if self.folder_copy_mode_frame is not None:
+            self.mode_notebook.add(self.folder_copy_mode_frame, text="Folder Copy")
         self.s3_mode_frame.columnconfigure(0, weight=1)
         self.direct_mode_frame.columnconfigure(0, weight=1)
         self.rename_mode_frame.columnconfigure(0, weight=1)
         self.simplified_bulk_mode_frame.columnconfigure(0, weight=1)
+        if self.folder_copy_mode_frame is not None:
+            self.folder_copy_mode_frame.columnconfigure(0, weight=1)
 
         s3_current_block = tk.Frame(
             self.s3_mode_frame,
@@ -1571,6 +1590,85 @@ class S3CopyApp:
             )
             self.simplified_bulk_dry_run_button.grid(row=3, column=3, sticky="e", pady=(8, 0))
 
+        if self.folder_copy_mode_frame is not None:
+            folder_copy_block = tk.Frame(
+                self.folder_copy_mode_frame,
+                bg=CURRENT_BLOCK_BG,
+                bd=1,
+                relief="groove",
+                padx=10,
+                pady=8,
+            )
+            folder_copy_block.grid(row=0, column=0, sticky="ew")
+            folder_copy_block.columnconfigure(1, weight=1)
+            tk.Label(
+                folder_copy_block,
+                text="Source Folder S3 URI",
+                bg=CURRENT_BLOCK_BG,
+                fg=SECTION_TEXT_COLOR,
+            ).grid(row=0, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+            self._make_entry(
+                folder_copy_block,
+                self.folder_copy_source_uri_var,
+                bg=CURRENT_FIELD_BG,
+                fg=SECTION_TEXT_COLOR,
+                row=0,
+            )
+            self._make_clear_button(
+                folder_copy_block,
+                self.folder_copy_source_uri_var,
+                CURRENT_FIELD_BG,
+                row=0,
+                column=2,
+                pady=(0, 6),
+            )
+            tk.Label(
+                folder_copy_block,
+                text="Destination Folder S3 URI",
+                bg=CURRENT_BLOCK_BG,
+                fg=SECTION_TEXT_COLOR,
+            ).grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+            self._make_entry(
+                folder_copy_block,
+                self.folder_copy_dest_uri_var,
+                bg=CURRENT_FIELD_BG,
+                fg=SECTION_TEXT_COLOR,
+                row=1,
+            )
+            self._make_clear_button(
+                folder_copy_block,
+                self.folder_copy_dest_uri_var,
+                CURRENT_FIELD_BG,
+                row=1,
+                column=2,
+                pady=(0, 6),
+            )
+            tk.Label(
+                folder_copy_block,
+                text="Summary",
+                bg=CURRENT_BLOCK_BG,
+                fg=SECTION_TEXT_COLOR,
+            ).grid(row=2, column=0, sticky="nw", padx=(0, 10))
+            tk.Label(
+                folder_copy_block,
+                textvariable=self.folder_copy_summary_var,
+                bg=CURRENT_BLOCK_BG,
+                fg=SECTION_TEXT_COLOR,
+                justify="left",
+                wraplength=640,
+            ).grid(row=2, column=1, columnspan=2, sticky="w")
+            tk.Label(
+                folder_copy_block,
+                text=(
+                    "Copies every object under the source folder to the destination folder and preserves "
+                    "the relative path for each object. Existing destination collisions are reviewed once at the end."
+                ),
+                bg=CURRENT_BLOCK_BG,
+                fg=SECTION_TEXT_COLOR,
+                justify="left",
+                wraplength=640,
+            ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
         self.desired_block = tk.Frame(
             input_frame,
             bg=DESIRED_BLOCK_BG,
@@ -1774,7 +1872,11 @@ class S3CopyApp:
         self.log_area.grid(row=0, column=0, sticky="nsew")
 
         self._append_log(
-            "App started. Use S3 Copy, Direct Upload, or Rename tab, then click the main action button."
+            (
+                "App started. Use S3 Copy, Direct Upload, Rename"
+                + (", Folder Copy" if POWER_MODE else "")
+                + ", or Simplified Bulk Copy, then click the main action button."
+            )
         )
 
     def _bind_field_events(self) -> None:
@@ -1787,6 +1889,8 @@ class S3CopyApp:
             self.rename_current_name_var,
             self.rename_desired_name_var,
             self.simplified_bulk_csv_path_var,
+            self.folder_copy_source_uri_var,
+            self.folder_copy_dest_uri_var,
             self.desired_move_folder_var,
             self.desired_name_var,
             self.desired_caption_name_var,
@@ -2188,6 +2292,12 @@ class S3CopyApp:
         selected_tab = self.mode_notebook.select()
         return selected_tab == str(self.simplified_bulk_mode_frame)
 
+    def _is_folder_copy_mode(self) -> bool:
+        if self.folder_copy_mode_frame is None:
+            return False
+        selected_tab = self.mode_notebook.select()
+        return selected_tab == str(self.folder_copy_mode_frame)
+
     def _download_template_for_mode(self, mode: str) -> None:
         if mode == "direct_upload":
             columns = BulkCopyDialog.DIRECT_UPLOAD_COLUMNS
@@ -2270,6 +2380,69 @@ class S3CopyApp:
         if self.use_session_only_credentials:
             return self.session_credentials
         return self._load_keychain_credentials()
+
+    @staticmethod
+    def _parse_s3_folder_uri(value: str) -> tuple[str, str, str]:
+        bucket, key = S3CopyApp._parse_s3_uri(value)
+        normalized_prefix = sanitize_folder_path(key)
+        if not normalized_prefix:
+            raise ValueError("Folder URI must include a prefix after the bucket name.")
+        normalized_prefix = normalized_prefix.rstrip("/") + "/"
+        return bucket, normalized_prefix, f"s3://{bucket}/{normalized_prefix}"
+
+    def _build_folder_copy_items(
+        self,
+        s3_client,
+        source_folder_uri: str,
+        destination_folder_uri: str,
+    ) -> tuple[list[tuple[str, ResolvedS3Paths]], FolderCopyPreview]:
+        source_bucket, source_prefix, normalized_source_uri = self._parse_s3_folder_uri(source_folder_uri)
+        dest_bucket, dest_prefix, normalized_dest_uri = self._parse_s3_folder_uri(destination_folder_uri)
+
+        if source_bucket == dest_bucket and source_prefix == dest_prefix:
+            raise UserVisibleError("Source folder and destination folder resolve to the same S3 location.")
+
+        self._enqueue_ui(self._append_log, f"Scanning source folder: {normalized_source_uri}")
+        source_objects = list_objects_under_prefix(
+            s3_client,
+            source_bucket,
+            source_prefix,
+            progress_callback=lambda msg: self._enqueue_ui(self._append_log, f"Folder scan: {msg}"),
+        )
+        if not source_objects:
+            raise UserVisibleError("No objects were found under the source folder.")
+
+        copy_items: list[tuple[str, ResolvedS3Paths]] = []
+        first_source_uri = ""
+        first_destination_uri = ""
+
+        for index, source_object in enumerate(source_objects, start=1):
+            relative_key = source_object.key[len(source_prefix) :]
+            if not relative_key:
+                continue
+
+            dest_key = join_key_parts(dest_prefix, relative_key)
+            paths = ResolvedS3Paths(
+                source_bucket=source_bucket,
+                source_key=source_object.key,
+                dest_bucket=dest_bucket,
+                dest_key=dest_key,
+            )
+            copy_items.append((f"Folder item {index}", paths))
+
+            if not first_source_uri:
+                first_source_uri = paths.source_uri
+                first_destination_uri = paths.dest_uri
+
+        if not copy_items:
+            raise UserVisibleError("No file objects were found under the source folder.")
+
+        preview = FolderCopyPreview(
+            object_count=len(copy_items),
+            first_source_uri=first_source_uri,
+            first_destination_uri=first_destination_uri,
+        )
+        return copy_items, preview
 
     def _prepare_copy_items(
         self,
@@ -3006,11 +3179,14 @@ class S3CopyApp:
         is_direct_upload_mode = self._is_direct_upload_mode()
         is_rename_mode = self._is_rename_mode()
         is_simplified_bulk_mode = self._is_simplified_bulk_mode()
+        is_folder_copy_mode = self._is_folder_copy_mode()
         self._update_pause_button_state()
         if is_rename_mode:
             self.copy_button.configure(text="Rename")
         elif is_simplified_bulk_mode:
             self.copy_button.configure(text="Run CSV Bulk Copy")
+        elif is_folder_copy_mode:
+            self.copy_button.configure(text="Run Folder Copy")
         else:
             self.copy_button.configure(text="Upload" if is_direct_upload_mode else "Copy")
 
@@ -3018,7 +3194,7 @@ class S3CopyApp:
         self.bulk_copy_button.configure(text=bulk_label)
         self.settings_menu.entryconfigure(self.bulk_menu_index, label=bulk_label)
 
-        if is_rename_mode or is_simplified_bulk_mode:
+        if is_rename_mode or is_simplified_bulk_mode or is_folder_copy_mode:
             self.desired_block.grid_remove()
             self.bulk_copy_button.configure(state="disabled")
             self.settings_menu.entryconfigure(self.bulk_menu_index, state="disabled")
@@ -3074,6 +3250,24 @@ class S3CopyApp:
             self.dest_caption_preview_var.set("")
             return
 
+        if is_folder_copy_mode:
+            source_folder_uri = self.folder_copy_source_uri_var.get().strip()
+            dest_folder_uri = self.folder_copy_dest_uri_var.get().strip()
+            self.source_preview_var.set(source_folder_uri)
+            self.dest_preview_var.set(dest_folder_uri)
+            self.source_caption_preview_var.set("")
+            self.dest_caption_preview_var.set("")
+
+            if not source_folder_uri and not dest_folder_uri:
+                self.folder_copy_summary_var.set(
+                    "Provide source and destination S3 folder URIs. Relative paths under the source folder will be preserved."
+                )
+            else:
+                self.folder_copy_summary_var.set(
+                    "Ready to scan the source folder and copy all contained objects while preserving relative paths."
+                )
+            return
+
         if self._is_direct_upload_mode():
             self.source_preview_var.set(self.local_file_path_var.get().strip())
             self.dest_preview_var.set(f"s3://{dest_bucket}/{primary_dest_key}" if dest_bucket and primary_dest_key else "")
@@ -3114,7 +3308,7 @@ class S3CopyApp:
                 self.simplified_bulk_dry_run_button.configure(state="disabled")
         else:
             self.copy_button.configure(state="normal")
-            if self._is_rename_mode() or self._is_simplified_bulk_mode():
+            if self._is_rename_mode() or self._is_simplified_bulk_mode() or self._is_folder_copy_mode():
                 self.bulk_copy_button.configure(state="disabled")
                 self.settings_menu.entryconfigure(self.bulk_menu_index, state="disabled")
             else:
@@ -3374,6 +3568,10 @@ class S3CopyApp:
             self._on_simplified_bulk_copy_clicked()
             return
 
+        if self._is_folder_copy_mode():
+            self._on_folder_copy_clicked()
+            return
+
         if self._is_direct_upload_mode():
             self._on_direct_upload_clicked()
             return
@@ -3466,6 +3664,54 @@ class S3CopyApp:
         threading.Thread(
             target=self._rename_worker,
             args=(source_ref, destination_ref, source_uri, dest_uri),
+            daemon=True,
+        ).start()
+
+    def _on_folder_copy_clicked(self) -> None:
+        source_folder_uri = self.folder_copy_source_uri_var.get().strip()
+        destination_folder_uri = self.folder_copy_dest_uri_var.get().strip()
+
+        errors: list[str] = []
+        try:
+            normalized_source_uri = self._parse_s3_folder_uri(source_folder_uri)[2]
+        except ValueError as error:
+            normalized_source_uri = ""
+            errors.append(f"Source Folder S3 URI: {error}")
+
+        try:
+            normalized_destination_uri = self._parse_s3_folder_uri(destination_folder_uri)[2]
+        except ValueError as error:
+            normalized_destination_uri = ""
+            errors.append(f"Destination Folder S3 URI: {error}")
+
+        if (
+            normalized_source_uri
+            and normalized_destination_uri
+            and normalized_source_uri == normalized_destination_uri
+        ):
+            errors.append("Source folder and destination folder resolve to the same S3 location.")
+
+        if errors:
+            messagebox.showerror("Validation", "\n".join(errors), parent=self.root)
+            self._append_log(f"Validation failed: {' | '.join(errors)}")
+            return
+
+        confirm_message = (
+            "Folder copy will scan the source folder and copy every object it finds.\n\n"
+            f"Source Folder: {normalized_source_uri}\n"
+            f"Destination Folder: {normalized_destination_uri}\n\n"
+            "Relative paths under the source folder will be preserved.\n"
+            "Destination overwrite candidates will be reviewed once at the end.\n\n"
+            "Continue?"
+        )
+        if not messagebox.askokcancel("Confirm Folder Copy", confirm_message, parent=self.root):
+            self._append_log("Folder copy cancelled before execution.")
+            return
+
+        self._set_running(True)
+        threading.Thread(
+            target=self._folder_copy_worker,
+            args=(normalized_source_uri, normalized_destination_uri),
             daemon=True,
         ).start()
 
@@ -3885,6 +4131,234 @@ class S3CopyApp:
         finally:
             if clear_running:
                 self._enqueue_ui(self._set_running, False)
+
+    def _prompt_folder_copy_overwrite_action(
+        self,
+        report_path: Path,
+        success_count: int,
+        pending_count: int,
+        failure_count: int,
+    ) -> str:
+        result = {"value": "finish_without_overwrites"}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Folder Copy Overwrite Review")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+
+        detail_lines = [
+            f"Copied successfully: {success_count}",
+            f"Would overwrite existing destination files: {pending_count}",
+            f"Failed: {failure_count}",
+            "",
+            "Open the report to review the overwrite candidates.",
+            "You can overwrite those files now or finish without overwriting them.",
+        ]
+
+        ttk.Label(body, text="Folder copy main pass finished.").pack(anchor="w")
+        ttk.Label(body, text="\n".join(detail_lines), justify="left").pack(anchor="w", pady=(8, 12))
+        ttk.Label(body, text=f"Report: {report_path}", justify="left", wraplength=640).pack(anchor="w")
+
+        button_row = ttk.Frame(body)
+        button_row.pack(anchor="e", pady=(14, 0))
+
+        ttk.Button(
+            button_row,
+            text="Open Report",
+            command=lambda: self._open_report_file(report_path),
+        ).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(
+            button_row,
+            text="Overwrite These Files",
+            command=lambda: (result.__setitem__("value", "overwrite_all_pending"), dialog.destroy()),
+        ).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(
+            button_row,
+            text="Finish Without Overwrites",
+            command=lambda: dialog.destroy(),
+        ).grid(row=0, column=2)
+
+        dialog.wait_window()
+        return result["value"]
+
+    def _folder_copy_worker(self, source_folder_uri: str, destination_folder_uri: str) -> None:
+        report_rows: list[SimplifiedBulkCopyReportRow] = []
+        report_path = self._simplified_bulk_report_path("folder_copy_result")
+
+        try:
+            credentials = self._get_active_credentials()
+            s3_client = create_s3_client(self.config, credentials)
+            copy_items, preview = self._build_folder_copy_items(s3_client, source_folder_uri, destination_folder_uri)
+
+            self._enqueue_ui(
+                self._append_log,
+                (
+                    f"Folder scan complete. Found {preview.object_count} object(s). "
+                    "Starting main copy pass."
+                ),
+            )
+
+            pending_entries: list[tuple[int, str, ResolvedS3Paths]] = []
+            for row_index, (item_label, item_paths) in enumerate(copy_items):
+                try:
+                    self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="collect_overwrites")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="success",
+                        message="Copied successfully.",
+                    )
+                except DeferredOverwriteError as error:
+                    self._enqueue_ui(self._append_log, f"{item_label} queued for end-of-run overwrite review.")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="overwrite_pending",
+                        message=str(error),
+                    )
+                    pending_entries.append((row_index, item_label, item_paths))
+                except (UserVisibleError, RuntimeError) as error:
+                    self._enqueue_ui(self._append_log, f"{item_label} failed: {error}")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=str(error),
+                    )
+                except Exception as error:  # pylint: disable=broad-except
+                    self._enqueue_ui(self._append_log, f"{item_label} unexpected failure: {error}")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=f"Unexpected error: {error}",
+                    )
+
+                report_rows.append(row)
+                report_path = self._write_simplified_bulk_report(report_rows, "folder_copy_result", report_path=report_path)
+
+            success_count = sum(1 for row in report_rows if row.status == "success")
+            pending_count = sum(1 for row in report_rows if row.status == "overwrite_pending")
+            failure_count = sum(1 for row in report_rows if row.status == "failed")
+
+            if pending_count:
+                action = self._call_on_ui_thread(
+                    self._prompt_folder_copy_overwrite_action,
+                    report_path,
+                    success_count,
+                    pending_count,
+                    failure_count,
+                )
+
+                if action == "overwrite_all_pending":
+                    for row_index, item_label, item_paths in pending_entries:
+                        try:
+                            self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="overwrite_all")
+                            report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                                row_label=item_label,
+                                source_uri=item_paths.source_uri,
+                                destination_uri=item_paths.dest_uri,
+                                status="success",
+                                message="Copied successfully after overwrite approval.",
+                            )
+                        except (UserVisibleError, RuntimeError) as error:
+                            self._enqueue_ui(self._append_log, f"{item_label} overwrite failed: {error}")
+                            report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                                row_label=item_label,
+                                source_uri=item_paths.source_uri,
+                                destination_uri=item_paths.dest_uri,
+                                status="failed",
+                                message=str(error),
+                            )
+                        except Exception as error:  # pylint: disable=broad-except
+                            self._enqueue_ui(self._append_log, f"{item_label} overwrite unexpected failure: {error}")
+                            report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                                row_label=item_label,
+                                source_uri=item_paths.source_uri,
+                                destination_uri=item_paths.dest_uri,
+                                status="failed",
+                                message=f"Unexpected error: {error}",
+                            )
+                        report_path = self._write_simplified_bulk_report(
+                            report_rows,
+                            "folder_copy_result",
+                            report_path=report_path,
+                        )
+                else:
+                    for row_index, item_label, item_paths in pending_entries:
+                        report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                            row_label=item_label,
+                            source_uri=item_paths.source_uri,
+                            destination_uri=item_paths.dest_uri,
+                            status="skipped_overwrite",
+                            message="Destination exists. Skipped because overwrite was not approved.",
+                        )
+                    report_path = self._write_simplified_bulk_report(
+                        report_rows,
+                        "folder_copy_result",
+                        report_path=report_path,
+                    )
+
+            success_count = sum(1 for row in report_rows if row.status == "success")
+            skipped_overwrite_count = sum(1 for row in report_rows if row.status == "skipped_overwrite")
+            failure_count = sum(1 for row in report_rows if row.status == "failed")
+
+            if failure_count == 0 and skipped_overwrite_count == 0:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Folder copy finished. Report written to {report_path}",
+                )
+                self._play_completion_notification()
+                self._enqueue_ui(
+                    messagebox.showinfo,
+                    "Folder Copy Complete",
+                    (
+                        f"Objects copied successfully: {success_count}\n"
+                        f"Objects failed: {failure_count}\n\n"
+                        f"Report saved to:\n{report_path}"
+                    ),
+                    parent=self.root,
+                )
+            else:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Folder copy finished with exceptions. Report written to {report_path}",
+                )
+                self._enqueue_ui(
+                    messagebox.showwarning,
+                    "Folder Copy Finished With Exceptions",
+                    (
+                        f"Objects copied successfully: {success_count}\n"
+                        f"Objects failed: {failure_count}\n"
+                        f"Skipped overwrite objects: {skipped_overwrite_count}\n\n"
+                        f"Report saved to:\n{report_path}\n\n"
+                        "Review the CSV report for per-object results."
+                    ),
+                    parent=self.root,
+                )
+        except UserVisibleError as error:
+            self._enqueue_ui(self._append_log, f"Folder copy failed: {error}")
+            self._enqueue_ui(messagebox.showerror, "Folder Copy Failed", str(error), parent=self.root)
+        except RuntimeError as error:
+            self._enqueue_ui(self._append_log, f"Configuration error: {error}")
+            self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
+        except Exception as error:  # pylint: disable=broad-except
+            self._enqueue_ui(self._append_log, f"Unexpected failure: {error}")
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Folder Copy Failed",
+                f"Unexpected error: {error}",
+                parent=self.root,
+            )
+        finally:
+            self._enqueue_ui(self._set_running, False)
 
     def _upload_worker(self, upload_items: list[DirectUploadItem]) -> None:
         try:
