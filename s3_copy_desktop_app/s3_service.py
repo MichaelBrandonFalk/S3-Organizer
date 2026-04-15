@@ -32,6 +32,14 @@ class S3ObjectRef:
     key: str
 
 
+@dataclass
+class S3ListedObject:
+    bucket: str
+    key: str
+    size_bytes: int
+    last_modified: str
+
+
 COPY_OBJECT_MAX_BYTES = 5 * 1024**3
 MIN_MULTIPART_PART_SIZE_BYTES = 5 * 1024**2
 DEFAULT_MULTIPART_PART_SIZE_BYTES = 256 * 1024**2
@@ -106,7 +114,22 @@ def list_objects_under_prefix(
     prefix: str,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> list[S3ObjectRef]:
-    objects: list[S3ObjectRef] = []
+    metadata_objects = list_objects_with_metadata_under_prefix(
+        s3_client,
+        bucket,
+        prefix,
+        progress_callback=progress_callback,
+    )
+    return [S3ObjectRef(bucket=item.bucket, key=item.key) for item in metadata_objects]
+
+
+def list_objects_with_metadata_under_prefix(
+    s3_client,
+    bucket: str,
+    prefix: str,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> list[S3ListedObject]:
+    objects: list[S3ListedObject] = []
     continuation_token: str | None = None
 
     while True:
@@ -127,7 +150,19 @@ def list_objects_under_prefix(
             key = str(entry.get("Key", "")).strip()
             if not key or key.endswith("/"):
                 continue
-            objects.append(S3ObjectRef(bucket=bucket, key=key))
+            last_modified_value = entry.get("LastModified")
+            if hasattr(last_modified_value, "isoformat"):
+                last_modified = last_modified_value.isoformat()
+            else:
+                last_modified = str(last_modified_value or "")
+            objects.append(
+                S3ListedObject(
+                    bucket=bucket,
+                    key=key,
+                    size_bytes=int(entry.get("Size", 0) or 0),
+                    last_modified=last_modified,
+                )
+            )
 
         _notify_progress(progress_callback, f"Scanned {len(objects)} object(s) so far...")
 

@@ -30,12 +30,14 @@ from .credentials_store import (
 )
 from .s3_service import (
     DestinationExistsError,
+    S3ListedObject,
     S3ObjectRef,
     UserVisibleError,
     copy_object,
     create_s3_client,
     delete_object,
     list_objects_under_prefix,
+    list_objects_with_metadata_under_prefix,
     object_exists,
     prefix_exists,
     upload_local_file,
@@ -223,6 +225,12 @@ class FolderCopyPreview:
     object_count: int
     first_source_uri: str
     first_destination_uri: str
+
+
+@dataclass
+class InventoryPreview:
+    object_count: int
+    first_object_uri: str
 
 
 class DeferredOverwriteError(UserVisibleError):
@@ -1142,6 +1150,10 @@ class S3CopyApp:
         self.simplified_bulk_summary_var = tk.StringVar(
             value="Load a CSV with source_uri and destination_uri columns. Resume details appear here if a prior run exists."
         )
+        self.inventory_path_var = tk.StringVar()
+        self.inventory_summary_var = tk.StringVar(
+            value="Enter an S3 bucket or prefix URI to export a CSV inventory of everything under that location."
+        )
         self.folder_copy_source_uri_var = tk.StringVar()
         self.folder_copy_dest_uri_var = tk.StringVar()
         self.folder_copy_summary_var = tk.StringVar(
@@ -1295,17 +1307,20 @@ class S3CopyApp:
         self.direct_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.rename_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.simplified_bulk_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
+        self.inventory_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.folder_copy_mode_frame = ttk.Frame(self.mode_notebook, padding=6) if POWER_MODE else None
         self.mode_notebook.add(self.s3_mode_frame, text="S3 Copy")
         self.mode_notebook.add(self.direct_mode_frame, text="Direct Upload")
         self.mode_notebook.add(self.rename_mode_frame, text="Rename in Destination")
         self.mode_notebook.add(self.simplified_bulk_mode_frame, text="Simplified Bulk Copy")
+        self.mode_notebook.add(self.inventory_mode_frame, text="Inventory")
         if self.folder_copy_mode_frame is not None:
             self.mode_notebook.add(self.folder_copy_mode_frame, text="Folder Copy")
         self.s3_mode_frame.columnconfigure(0, weight=1)
         self.direct_mode_frame.columnconfigure(0, weight=1)
         self.rename_mode_frame.columnconfigure(0, weight=1)
         self.simplified_bulk_mode_frame.columnconfigure(0, weight=1)
+        self.inventory_mode_frame.columnconfigure(0, weight=1)
         if self.folder_copy_mode_frame is not None:
             self.folder_copy_mode_frame.columnconfigure(0, weight=1)
 
@@ -1593,6 +1608,63 @@ class S3CopyApp:
             )
             self.simplified_bulk_dry_run_button.grid(row=3, column=3, sticky="e", pady=(8, 0))
 
+        inventory_block = tk.Frame(
+            self.inventory_mode_frame,
+            bg=CURRENT_BLOCK_BG,
+            bd=1,
+            relief="groove",
+            padx=10,
+            pady=8,
+        )
+        inventory_block.grid(row=0, column=0, sticky="ew")
+        inventory_block.columnconfigure(1, weight=1)
+        tk.Label(
+            inventory_block,
+            text="S3 Bucket or Prefix URI",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        self._make_entry(
+            inventory_block,
+            self.inventory_path_var,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=0,
+        )
+        self._make_clear_button(
+            inventory_block,
+            self.inventory_path_var,
+            CURRENT_FIELD_BG,
+            row=0,
+            column=2,
+            pady=(0, 6),
+        )
+        tk.Label(
+            inventory_block,
+            text="Summary",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=1, column=0, sticky="nw", padx=(0, 10))
+        tk.Label(
+            inventory_block,
+            textvariable=self.inventory_summary_var,
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+            justify="left",
+            wraplength=640,
+        ).grid(row=1, column=1, columnspan=2, sticky="w")
+        tk.Label(
+            inventory_block,
+            text=(
+                "Exports a CSV listing every object under the bucket/prefix you enter. "
+                "This is read-only and does not copy, rename, or delete anything."
+            ),
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+            justify="left",
+            wraplength=640,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
         if self.folder_copy_mode_frame is not None:
             folder_copy_block = tk.Frame(
                 self.folder_copy_mode_frame,
@@ -1876,7 +1948,7 @@ class S3CopyApp:
 
         self._append_log(
             (
-                "App started. Use S3 Copy, Direct Upload, Rename"
+                "App started. Use S3 Copy, Direct Upload, Rename, Inventory"
                 + (", Folder Copy" if POWER_MODE else "")
                 + ", or Simplified Bulk Copy, then click the main action button."
             )
@@ -1892,6 +1964,7 @@ class S3CopyApp:
             self.rename_current_name_var,
             self.rename_desired_name_var,
             self.simplified_bulk_csv_path_var,
+            self.inventory_path_var,
             self.folder_copy_source_uri_var,
             self.folder_copy_dest_uri_var,
             self.desired_move_folder_var,
@@ -2297,6 +2370,10 @@ class S3CopyApp:
         selected_tab = self.mode_notebook.select()
         return selected_tab == str(self.simplified_bulk_mode_frame)
 
+    def _is_inventory_mode(self) -> bool:
+        selected_tab = self.mode_notebook.select()
+        return selected_tab == str(self.inventory_mode_frame)
+
     def _is_folder_copy_mode(self) -> bool:
         if self.folder_copy_mode_frame is None:
             return False
@@ -2394,6 +2471,65 @@ class S3CopyApp:
             raise ValueError("Folder URI must include a prefix after the bucket name.")
         normalized_prefix = normalized_prefix.rstrip("/") + "/"
         return bucket, normalized_prefix, f"s3://{bucket}/{normalized_prefix}"
+
+    @staticmethod
+    def _parse_s3_inventory_uri(value: str) -> tuple[str, str, str]:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("S3 URI cannot be blank.")
+        if not cleaned.lower().startswith("s3://"):
+            raise ValueError(f"Invalid S3 URI: {cleaned}")
+
+        remainder = cleaned[5:]
+        bucket, separator, key = remainder.partition("/")
+        bucket = bucket.strip()
+        if not bucket:
+            raise ValueError(f"Invalid S3 URI bucket: {cleaned}")
+
+        if not separator or not key.strip():
+            return bucket, "", f"s3://{bucket}/"
+
+        normalized_prefix = sanitize_folder_path(key)
+        if not normalized_prefix:
+            return bucket, "", f"s3://{bucket}/"
+        normalized_prefix = normalized_prefix.rstrip("/") + "/"
+        return bucket, normalized_prefix, f"s3://{bucket}/{normalized_prefix}"
+
+    @staticmethod
+    def _inventory_report_path() -> Path:
+        downloads_dir = Path.home() / "Downloads"
+        if downloads_dir.exists():
+            base_dir = downloads_dir
+        else:
+            base_dir = Path.home()
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        return base_dir / f"{APP_FILE_SLUG}_inventory_{timestamp}.csv"
+
+    def _write_inventory_report(
+        self,
+        inventory_uri: str,
+        listed_objects: list[S3ListedObject],
+        report_path: Path | None = None,
+    ) -> Path:
+        if report_path is None:
+            report_path = self._inventory_report_path()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8", newline="") as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(["inventory_uri", inventory_uri])
+            writer.writerow([])
+            writer.writerow(["bucket", "key", "size_bytes", "last_modified", "s3_uri"])
+            for item in listed_objects:
+                writer.writerow(
+                    [
+                        item.bucket,
+                        item.key,
+                        item.size_bytes,
+                        item.last_modified,
+                        f"s3://{item.bucket}/{item.key}",
+                    ]
+                )
+        return report_path
 
     def _build_folder_copy_items(
         self,
@@ -3085,6 +3221,32 @@ class S3CopyApp:
             daemon=True,
         ).start()
 
+    def _on_inventory_clicked(self) -> None:
+        inventory_uri = self.inventory_path_var.get().strip()
+        try:
+            _bucket, _prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+        except ValueError as error:
+            messagebox.showerror("Inventory Validation", str(error), parent=self.root)
+            self._append_log(f"Inventory validation failed: {error}")
+            return
+
+        confirm_message = (
+            "Inventory export will scan this S3 location and write a CSV report.\n\n"
+            f"Location: {normalized_uri}\n\n"
+            "This is read-only and will not copy, rename, or delete anything.\n\n"
+            "Continue?"
+        )
+        if not messagebox.askokcancel("Confirm Inventory Export", confirm_message, parent=self.root):
+            self._append_log("Inventory export cancelled before execution.")
+            return
+
+        self._set_running(True)
+        threading.Thread(
+            target=self._inventory_worker,
+            args=(normalized_uri,),
+            daemon=True,
+        ).start()
+
     def _start_bulk_copy(self, rows: list[dict[str, str]]) -> bool:
         if self._running:
             messagebox.showerror("Bulk Copy", "A copy is already running. Wait for it to finish first.", parent=self.root)
@@ -3222,12 +3384,15 @@ class S3CopyApp:
         is_direct_upload_mode = self._is_direct_upload_mode()
         is_rename_mode = self._is_rename_mode()
         is_simplified_bulk_mode = self._is_simplified_bulk_mode()
+        is_inventory_mode = self._is_inventory_mode()
         is_folder_copy_mode = self._is_folder_copy_mode()
         self._update_pause_button_state()
         if is_rename_mode:
             self.copy_button.configure(text="Rename")
         elif is_simplified_bulk_mode:
             self.copy_button.configure(text="Run CSV Bulk Copy")
+        elif is_inventory_mode:
+            self.copy_button.configure(text="Export Inventory")
         elif is_folder_copy_mode:
             self.copy_button.configure(text="Run Folder Copy")
         else:
@@ -3237,7 +3402,7 @@ class S3CopyApp:
         self.bulk_copy_button.configure(text=bulk_label)
         self.settings_menu.entryconfigure(self.bulk_menu_index, label=bulk_label)
 
-        if is_rename_mode or is_simplified_bulk_mode or is_folder_copy_mode:
+        if is_rename_mode or is_simplified_bulk_mode or is_inventory_mode or is_folder_copy_mode:
             self.desired_block.grid_remove()
             self.bulk_copy_button.configure(state="disabled")
             self.settings_menu.entryconfigure(self.bulk_menu_index, state="disabled")
@@ -3291,6 +3456,27 @@ class S3CopyApp:
                 self.dest_preview_var.set(preview.first_destination_uri)
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            return
+
+        if is_inventory_mode:
+            inventory_uri = self.inventory_path_var.get().strip()
+            self.source_preview_var.set(inventory_uri)
+            self.dest_preview_var.set("")
+            self.source_caption_preview_var.set("")
+            self.dest_caption_preview_var.set("")
+
+            if not inventory_uri:
+                self.inventory_summary_var.set(
+                    "Enter an S3 bucket or prefix URI to export a CSV inventory of everything under that location."
+                )
+            else:
+                try:
+                    _bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+                    scope_text = "bucket root" if not prefix else "prefix"
+                    self.inventory_summary_var.set(f"Ready to export an inventory for {scope_text}: {normalized_uri}")
+                    self.source_preview_var.set(normalized_uri)
+                except ValueError as error:
+                    self.inventory_summary_var.set(str(error))
             return
 
         if is_folder_copy_mode:
@@ -3351,7 +3537,7 @@ class S3CopyApp:
                 self.simplified_bulk_dry_run_button.configure(state="disabled")
         else:
             self.copy_button.configure(state="normal")
-            if self._is_rename_mode() or self._is_simplified_bulk_mode() or self._is_folder_copy_mode():
+            if self._is_rename_mode() or self._is_simplified_bulk_mode() or self._is_inventory_mode() or self._is_folder_copy_mode():
                 self.bulk_copy_button.configure(state="disabled")
                 self.settings_menu.entryconfigure(self.bulk_menu_index, state="disabled")
             else:
@@ -3609,6 +3795,10 @@ class S3CopyApp:
 
         if self._is_simplified_bulk_mode():
             self._on_simplified_bulk_copy_clicked()
+            return
+
+        if self._is_inventory_mode():
+            self._on_inventory_clicked()
             return
 
         if self._is_folder_copy_mode():
@@ -4418,6 +4608,49 @@ class S3CopyApp:
             self._enqueue_ui(
                 messagebox.showerror,
                 "Folder Copy Failed",
+                f"Unexpected error: {error}",
+                parent=self.root,
+            )
+        finally:
+            self._enqueue_ui(self._set_running, False)
+
+    def _inventory_worker(self, inventory_uri: str) -> None:
+        try:
+            credentials = self._get_active_credentials()
+            s3_client = create_s3_client(self.config, credentials)
+            bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+            self._enqueue_ui(self._append_log, f"Starting inventory scan for {normalized_uri}")
+            listed_objects = list_objects_with_metadata_under_prefix(
+                s3_client,
+                bucket,
+                prefix,
+                progress_callback=lambda msg: self._enqueue_ui(self._append_log, f"Inventory scan: {msg}"),
+            )
+            report_path = self._write_inventory_report(normalized_uri, listed_objects)
+            self._enqueue_ui(
+                self._append_log,
+                f"Inventory export finished. Listed {len(listed_objects)} object(s). Report written to {report_path}",
+            )
+            self._enqueue_ui(
+                messagebox.showinfo,
+                "Inventory Export Complete",
+                (
+                    f"Objects listed: {len(listed_objects)}\n\n"
+                    f"Report saved to:\n{report_path}"
+                ),
+                parent=self.root,
+            )
+        except UserVisibleError as error:
+            self._enqueue_ui(self._append_log, f"Inventory export failed: {error}")
+            self._enqueue_ui(messagebox.showerror, "Inventory Export Failed", str(error), parent=self.root)
+        except RuntimeError as error:
+            self._enqueue_ui(self._append_log, f"Configuration error: {error}")
+            self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
+        except Exception as error:  # pylint: disable=broad-except
+            self._enqueue_ui(self._append_log, f"Unexpected failure: {error}")
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Inventory Export Failed",
                 f"Unexpected error: {error}",
                 parent=self.root,
             )
