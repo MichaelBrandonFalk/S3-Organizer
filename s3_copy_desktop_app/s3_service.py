@@ -513,7 +513,7 @@ def _map_copy_client_error(error: ClientError) -> UserVisibleError:
 def map_aws_error(error: Exception) -> UserVisibleError:
     if isinstance(error, NoCredentialsError):
         return UserVisibleError(
-            "AWS credentials are missing. Open Settings to save credentials in Keychain or configure an AWS profile on this Mac."
+            "AWS credentials are missing. Open Settings to save credentials in the system credential store or configure an AWS profile on this machine."
         )
 
     if isinstance(error, EndpointConnectionError):

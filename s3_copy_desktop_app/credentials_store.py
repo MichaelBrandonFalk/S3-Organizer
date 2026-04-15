@@ -1,4 +1,4 @@
-"""Store and retrieve AWS credentials from macOS Keychain via keyring."""
+"""Store and retrieve AWS credentials from the system credential store via keyring."""
 
 from __future__ import annotations
 
@@ -26,11 +26,11 @@ class AwsCredentials:
 
 
 class KeychainOwnerConflictError(RuntimeError):
-    """Raised when macOS keychain rejects writes due to item ownership mismatch."""
+    """Raised when the platform credential store rejects writes due to item ownership mismatch."""
 
 
 def load_credentials() -> Optional[AwsCredentials]:
-    """Load credentials from keychain, returning None when missing."""
+    """Load credentials from the system credential store, returning None when missing."""
     for service_name in SERVICE_CANDIDATES:
         try:
             combined_value = (keyring.get_password(service_name, USERNAME_COMBINED) or "").strip()
@@ -50,9 +50,9 @@ def load_credentials() -> Optional[AwsCredentials]:
             secret_key = (keyring.get_password(service_name, USERNAME_SECRET_KEY) or "").strip()
             session_token = (keyring.get_password(service_name, USERNAME_SESSION_TOKEN) or "").strip()
         except KeyringError as error:
-            raise RuntimeError(f"Could not read Keychain credentials: {error}") from error
+            raise RuntimeError(f"Could not read saved credentials: {error}") from error
         except json.JSONDecodeError as error:
-            raise RuntimeError(f"Could not read Keychain credentials: invalid stored credential payload ({error})") from error
+            raise RuntimeError(f"Could not read saved credentials: invalid stored credential payload ({error})") from error
 
         if access_key and secret_key:
             credentials = AwsCredentials(
@@ -71,7 +71,7 @@ def load_credentials() -> Optional[AwsCredentials]:
 
 
 def save_credentials(credentials: AwsCredentials) -> None:
-    """Write credentials to keychain."""
+    """Write credentials to the system credential store."""
     try:
         payload = json.dumps(
             {
@@ -84,14 +84,14 @@ def save_credentials(credentials: AwsCredentials) -> None:
     except KeyringError as error:
         if "-25244" in str(error):
             raise KeychainOwnerConflictError(
-                "Could not write Keychain credentials because an older keychain item has an incompatible owner. "
-                "Delete old 's3-copy-desktop-app' entries in Keychain Access and try Save again."
+                "Could not write saved credentials because an older credential-store item has an incompatible owner. "
+                "Delete old 's3-copy-desktop-app' credential entries and try Save again."
             ) from error
-        raise RuntimeError(f"Could not write Keychain credentials: {error}") from error
+        raise RuntimeError(f"Could not write saved credentials: {error}") from error
 
 
 def clear_credentials() -> None:
-    """Remove credentials from keychain if they exist."""
+    """Remove credentials from the system credential store if they exist."""
     for service_name in SERVICE_CANDIDATES:
         for username in (USERNAME_COMBINED, USERNAME_ACCESS_KEY, USERNAME_SECRET_KEY, USERNAME_SESSION_TOKEN):
             try:
@@ -99,4 +99,4 @@ def clear_credentials() -> None:
             except keyring.errors.PasswordDeleteError:
                 pass
             except KeyringError as error:
-                raise RuntimeError(f"Could not update Keychain credentials: {error}") from error
+                raise RuntimeError(f"Could not update saved credentials: {error}") from error

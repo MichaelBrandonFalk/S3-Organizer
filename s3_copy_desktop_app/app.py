@@ -14,11 +14,15 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+
+if sys.platform.startswith("win"):
+    import winsound
 
 from .config_store import AppConfig, load_config, save_config
 from .credentials_store import (
@@ -58,6 +62,8 @@ APP_TITLE = os.getenv("S3_APP_TITLE", "s3Organizer")
 APP_FILE_SLUG = os.getenv("S3_APP_FILE_SLUG", "s3Organizer")
 SIMPLIFIED_BULK_REQUIRE_DRY_RUN = os.getenv("S3_SIMPLIFIED_BULK_REQUIRE_DRY_RUN", "1") != "0"
 POWER_MODE = APP_FILE_SLUG.lower() == "powers3browser"
+IS_WINDOWS = sys.platform.startswith("win")
+IS_MACOS = sys.platform == "darwin"
 WINDOW_WIDTH = 760
 WINDOW_HEIGHT = 940
 VOICE_COMMAND = ["say", "-v", "Samantha", "Copy Complete"]
@@ -80,6 +86,14 @@ def _configure_undo(widget: tk.Misc) -> None:
         widget.configure(undo=True, autoseparators=True, maxundo=-1)
     except tk.TclError:
         pass
+
+
+def _credential_store_label() -> str:
+    if IS_MACOS:
+        return "macOS Keychain"
+    if IS_WINDOWS:
+        return "Windows Credential Manager"
+    return "system credential store"
 
 
 def _invoke_text_edit(widget: tk.Misc, operation: str) -> str | None:
@@ -376,8 +390,12 @@ class SettingsDialog(tk.Toplevel):
         for entry_class in ("Entry", "TEntry"):
             self.bind_class(entry_class, "<Command-z>", self._handle_undo_shortcut, add="+")
             self.bind_class(entry_class, "<Command-Z>", self._handle_redo_shortcut, add="+")
+            self.bind_class(entry_class, "<Control-z>", self._handle_undo_shortcut, add="+")
+            self.bind_class(entry_class, "<Control-Z>", self._handle_redo_shortcut, add="+")
         self.bind_class("Text", "<Command-z>", self._handle_undo_shortcut, add="+")
         self.bind_class("Text", "<Command-Z>", self._handle_redo_shortcut, add="+")
+        self.bind_class("Text", "<Control-z>", self._handle_undo_shortcut, add="+")
+        self.bind_class("Text", "<Control-Z>", self._handle_redo_shortcut, add="+")
 
     def _handle_undo_shortcut(self, event) -> str | None:
         return self._undo_manager.undo_from_widget(event.widget)
@@ -416,7 +434,7 @@ class SettingsDialog(tk.Toplevel):
     def _clear_stored_credentials(self) -> None:
         if not messagebox.askyesno(
             "Clear Credentials",
-            "Remove saved AWS credentials from macOS Keychain?",
+            f"Remove saved AWS credentials from {_credential_store_label()}?",
             parent=self,
         ):
             return
@@ -486,10 +504,10 @@ class SettingsDialog(tk.Toplevel):
                     save_credentials(entered_credentials)
         except KeychainOwnerConflictError:
             use_session_only = messagebox.askyesno(
-                "Keychain Blocked",
+                "Credential Store Blocked",
                 (
-                    "macOS blocked saving these credentials to Keychain.\n\n"
-                    "Switch to session-only mode and continue without saving to Keychain?"
+                    f"{_credential_store_label()} blocked saving these credentials.\n\n"
+                    "Switch to session-only mode and continue without saving them?"
                 ),
                 parent=self,
             )
@@ -695,8 +713,12 @@ class BulkCopyDialog(tk.Toplevel):
         for entry_class in ("Entry", "TEntry"):
             self.bind_class(entry_class, "<Command-z>", self._handle_undo_shortcut, add="+")
             self.bind_class(entry_class, "<Command-Z>", self._handle_redo_shortcut, add="+")
+            self.bind_class(entry_class, "<Control-z>", self._handle_undo_shortcut, add="+")
+            self.bind_class(entry_class, "<Control-Z>", self._handle_redo_shortcut, add="+")
         self.bind_class("Text", "<Command-z>", self._handle_undo_shortcut, add="+")
         self.bind_class("Text", "<Command-Z>", self._handle_redo_shortcut, add="+")
+        self.bind_class("Text", "<Control-z>", self._handle_undo_shortcut, add="+")
+        self.bind_class("Text", "<Control-Z>", self._handle_redo_shortcut, add="+")
 
     def _handle_undo_shortcut(self, event) -> str | None:
         return self._undo_manager.undo_from_widget(event.widget)
@@ -1273,8 +1295,12 @@ class S3CopyApp:
         for entry_class in ("Entry", "TEntry"):
             self.root.bind_class(entry_class, "<Command-z>", self._handle_undo_shortcut, add="+")
             self.root.bind_class(entry_class, "<Command-Z>", self._handle_redo_shortcut, add="+")
+            self.root.bind_class(entry_class, "<Control-z>", self._handle_undo_shortcut, add="+")
+            self.root.bind_class(entry_class, "<Control-Z>", self._handle_redo_shortcut, add="+")
         self.root.bind_class("Text", "<Command-z>", self._handle_undo_shortcut, add="+")
         self.root.bind_class("Text", "<Command-Z>", self._handle_redo_shortcut, add="+")
+        self.root.bind_class("Text", "<Control-z>", self._handle_undo_shortcut, add="+")
+        self.root.bind_class("Text", "<Control-Z>", self._handle_redo_shortcut, add="+")
 
     def _handle_undo_shortcut(self, event) -> str | None:
         return self._undo_manager.undo_from_widget(event.widget)
@@ -1976,7 +2002,7 @@ class S3CopyApp:
 
     def _prompt_for_keychain_credentials_if_missing(self) -> None:
         if self.use_session_only_credentials:
-            self._append_log("Credential mode is session-only. Keychain is not used unless you switch modes.")
+            self._append_log("Credential mode is session-only. Saved credentials are not used unless you switch modes.")
             return
 
         try:
@@ -1986,15 +2012,15 @@ class S3CopyApp:
             return
 
         if credentials:
-            self._append_log("Loaded AWS credentials from macOS Keychain.")
+            self._append_log(f"Loaded AWS credentials from {_credential_store_label()}.")
             return
 
         self._append_log(
-            "No AWS credentials found in Keychain. Default AWS profile credentials may still be used."
+            f"No AWS credentials found in {_credential_store_label()}. Default AWS profile credentials may still be used."
         )
         if messagebox.askyesno(
             "AWS Credentials",
-            "No AWS credentials are currently stored in Keychain. Open Settings to add credentials now?",
+            f"No AWS credentials are currently stored in {_credential_store_label()}. Open Settings to add credentials now?",
             parent=self.root,
         ):
             self.open_settings()
@@ -2981,7 +3007,12 @@ class S3CopyApp:
 
     def _open_report_file(self, report_path: Path) -> None:
         try:
-            subprocess.Popen(["open", str(report_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if IS_WINDOWS:
+                os.startfile(str(report_path))  # type: ignore[attr-defined]
+            elif IS_MACOS:
+                subprocess.Popen(["open", str(report_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                webbrowser.open(report_path.as_uri())
         except Exception as error:  # pylint: disable=broad-except
             self._append_log(f"Could not open report file: {error}")
             messagebox.showerror("Open Report Failed", f"Could not open report file: {error}", parent=self.root)
@@ -3557,14 +3588,25 @@ class S3CopyApp:
         self.log_area.configure(state="disabled")
 
     def _play_completion_notification(self) -> None:
+        if IS_WINDOWS:
+            try:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                return
+            except Exception:  # pylint: disable=broad-except
+                pass
+
         try:
-            subprocess.Popen(VOICE_COMMAND, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
+            if IS_MACOS:
+                subprocess.Popen(VOICE_COMMAND, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
         except Exception:  # pylint: disable=broad-except
             pass
 
         try:
-            subprocess.Popen(DING_COMMAND, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if IS_MACOS:
+                subprocess.Popen(DING_COMMAND, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elif not IS_WINDOWS:
+                print("\a", end="", flush=True)
         except Exception:  # pylint: disable=broad-except
             pass
 

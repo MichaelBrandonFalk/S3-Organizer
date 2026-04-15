@@ -4,9 +4,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 
-APP_DIR = Path.home() / ".s3_copy_desktop_app"
+
+def _default_app_dir() -> Path:
+    appdata = os.getenv("APPDATA", "").strip()
+    if appdata:
+        return Path(appdata) / "s3_copy_desktop_app"
+    return Path.home() / ".s3_copy_desktop_app"
+
+
+APP_DIR = _default_app_dir()
 CONFIG_PATH = APP_DIR / "config.json"
 
 
