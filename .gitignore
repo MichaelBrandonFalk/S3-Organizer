@@ -2,5 +2,8 @@ __pycache__/
 *.pyc
 .DS_Store
 .venv/
+.venv-x86/
+.pyenv-x86/
+*.spec
 build/
 dist/
