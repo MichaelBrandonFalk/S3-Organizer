@@ -37,6 +37,7 @@ from .s3_service import (
     delete_object,
     list_objects_under_prefix,
     object_exists,
+    prefix_exists,
     upload_local_file,
 )
 from .validators import (
@@ -213,6 +214,8 @@ class SimplifiedBulkCopyReportRow:
     destination_uri: str
     status: str
     message: str
+    destination_folder_uri: str = ""
+    destination_folder_status: str = ""
 
 
 @dataclass
@@ -2048,6 +2051,8 @@ class S3CopyApp:
                 destination_uri=str(row.get("destination_uri", "")),
                 status=str(row.get("status", "")),
                 message=str(row.get("message", "")),
+                destination_folder_uri=str(row.get("destination_folder_uri", "")),
+                destination_folder_status=str(row.get("destination_folder_status", "")),
             )
             for row in raw_rows
         ]
@@ -2722,6 +2727,32 @@ class S3CopyApp:
         dest_ref = S3ObjectRef(bucket=paths.dest_bucket, key=paths.dest_key)
         return source_ref, dest_ref
 
+    @staticmethod
+    def _destination_folder_details(paths: ResolvedS3Paths) -> tuple[str, str]:
+        parent_prefix = sanitize_folder_path(paths.dest_key.rpartition("/")[0])
+        if not parent_prefix:
+            return f"s3://{paths.dest_bucket}/", ""
+        normalized_prefix = parent_prefix.rstrip("/") + "/"
+        return f"s3://{paths.dest_bucket}/{normalized_prefix}", normalized_prefix
+
+    def _resolve_destination_folder_status(
+        self,
+        s3_client,
+        paths: ResolvedS3Paths,
+        cache: dict[tuple[str, str], bool],
+    ) -> tuple[str, str, str]:
+        folder_uri, folder_prefix = self._destination_folder_details(paths)
+        if not folder_prefix:
+            return folder_uri, "bucket_root_exists", "Destination bucket root already exists."
+
+        cache_key = (paths.dest_bucket, folder_prefix)
+        if cache_key not in cache:
+            cache[cache_key] = prefix_exists(s3_client, paths.dest_bucket, folder_prefix)
+
+        if cache[cache_key]:
+            return folder_uri, "exists", "Destination folder path already exists."
+        return folder_uri, "will_create", "Destination folder path will be created by this copy."
+
     def _build_aws_cli_dry_run_environment(self, credentials: AwsCredentials | None) -> dict[str, str]:
         env = os.environ.copy()
         if credentials:
@@ -2787,13 +2818,25 @@ class S3CopyApp:
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with open(report_path, "w", encoding="utf-8", newline="") as file_handle:
             writer = csv.writer(file_handle)
-            writer.writerow(["row_label", "source_uri", "destination_uri", "status", "message"])
+            writer.writerow(
+                [
+                    "row_label",
+                    "source_uri",
+                    "destination_uri",
+                    "destination_folder_uri",
+                    "destination_folder_status",
+                    "status",
+                    "message",
+                ]
+            )
             for row in report_rows:
                 writer.writerow(
                     [
                         row.row_label,
                         row.source_uri,
                         row.destination_uri,
+                        row.destination_folder_uri,
+                        row.destination_folder_status,
                         row.status,
                         row.message,
                     ]
@@ -3784,6 +3827,7 @@ class S3CopyApp:
                 checkpoint["phase"] = "dry_run"
                 start_index = int(checkpoint.get("next_index", 0))
                 duplicate_destination_indices = self._find_duplicate_destination_indices(copy_items)
+                folder_existence_cache: dict[tuple[str, str], bool] = {}
                 if duplicate_destination_indices and start_index == 0:
                     self._enqueue_ui(
                         self._append_log,
@@ -3796,8 +3840,20 @@ class S3CopyApp:
                     self._wait_if_simplified_bulk_paused(checkpoint, "Dry run")
                     item_label, item_paths = copy_items[index]
                     source_ref, dest_ref = self._build_s3_ref_from_paths(item_paths)
+                    destination_folder_uri = ""
+                    destination_folder_status = ""
+                    destination_folder_message = ""
 
                     try:
+                        (
+                            destination_folder_uri,
+                            destination_folder_status,
+                            destination_folder_message,
+                        ) = self._resolve_destination_folder_status(
+                            s3_client,
+                            item_paths,
+                            folder_existence_cache,
+                        )
                         if index in duplicate_destination_indices:
                             raise UserVisibleError(
                                 "Duplicate destination_uri found in this CSV. Another row targets the same destination object."
@@ -3823,8 +3879,10 @@ class S3CopyApp:
                                 row_label=item_label,
                                 source_uri=item_paths.source_uri,
                                 destination_uri=item_paths.dest_uri,
+                                destination_folder_uri=destination_folder_uri,
+                                destination_folder_status=destination_folder_status,
                                 status="overwrite_warning",
-                                message=f"Destination already exists. {cli_message}",
+                                message=f"Destination already exists. {destination_folder_message} {cli_message}",
                             )
                             self._enqueue_ui(
                                 self._append_log,
@@ -3835,8 +3893,10 @@ class S3CopyApp:
                                 row_label=item_label,
                                 source_uri=item_paths.source_uri,
                                 destination_uri=item_paths.dest_uri,
+                                destination_folder_uri=destination_folder_uri,
+                                destination_folder_status=destination_folder_status,
                                 status="ready",
-                                message=cli_message,
+                                message=f"{destination_folder_message} {cli_message}",
                             )
                             self._enqueue_ui(self._append_log, f"{item_label}: dry run passed.")
                     except (UserVisibleError, RuntimeError) as error:
@@ -3844,8 +3904,10 @@ class S3CopyApp:
                             row_label=item_label,
                             source_uri=item_paths.source_uri,
                             destination_uri=item_paths.dest_uri,
+                            destination_folder_uri=destination_folder_uri,
+                            destination_folder_status=destination_folder_status,
                             status="failed",
-                            message=str(error),
+                            message=f"{error} {destination_folder_message}".strip(),
                         )
                         self._enqueue_ui(self._append_log, f"{item_label}: dry run failed: {error}")
                     except Exception as error:  # pylint: disable=broad-except
@@ -3853,8 +3915,10 @@ class S3CopyApp:
                             row_label=item_label,
                             source_uri=item_paths.source_uri,
                             destination_uri=item_paths.dest_uri,
+                            destination_folder_uri=destination_folder_uri,
+                            destination_folder_status=destination_folder_status,
                             status="failed",
-                            message=f"Unexpected error: {error}",
+                            message=f"Unexpected error: {error} {destination_folder_message}".strip(),
                         )
                         self._enqueue_ui(self._append_log, f"{item_label}: dry run unexpected failure: {error}")
 

@@ -80,6 +80,26 @@ def object_exists(s3_client, object_ref: S3ObjectRef) -> bool:
         raise map_aws_error(error) from error
 
 
+def prefix_exists(s3_client, bucket: str, prefix: str) -> bool:
+    normalized_prefix = prefix.strip("/")
+    if not normalized_prefix:
+        return True
+
+    search_prefix = normalized_prefix.rstrip("/") + "/"
+    try:
+        response = s3_client.list_objects_v2(Bucket=bucket, Prefix=search_prefix, MaxKeys=1)
+        return bool(response.get("Contents"))
+    except ClientError as error:
+        error_code = str(error.response.get("Error", {}).get("Code", ""))
+        if error_code in {"403", "AccessDenied"}:
+            raise UserVisibleError(
+                "Access denied while checking destination folder paths. Confirm AWS permissions for the destination bucket."
+            ) from error
+        raise map_aws_error(error) from error
+    except (NoCredentialsError, EndpointConnectionError, BotoCoreError) as error:
+        raise map_aws_error(error) from error
+
+
 def list_objects_under_prefix(
     s3_client,
     bucket: str,
