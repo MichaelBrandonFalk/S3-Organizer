@@ -2317,6 +2317,7 @@ class S3CopyApp:
             command=lambda: dialog.destroy(),
         ).grid(row=0, column=3)
 
+        self._present_modal_dialog(dialog)
         dialog.wait_window()
         return result["value"]
 
@@ -3043,7 +3044,7 @@ class S3CopyApp:
                 f"Overwrite warnings: {overwrite_count}",
                 f"Errors: {error_count}",
                 "",
-                "Failed rows will be skipped. Review the report, then copy ready rows only or include overwrite rows.",
+                "Failed rows will be skipped. Review the report, then proceed with copy for the eligible rows or include overwrite rows.",
             ]
         elif error_count:
             header_text = "Dry run found some failures."
@@ -3053,7 +3054,7 @@ class S3CopyApp:
                 f"Overwrite warnings: {overwrite_count}",
                 f"Errors: {error_count}",
                 "",
-                "Failed rows will be skipped. Review the report, then copy the ready rows or cancel.",
+                "Failed rows will be skipped. Review the report, then proceed with copy for the ready rows or cancel.",
             ]
         elif overwrite_count:
             header_text = "Dry run found destination overwrite warnings."
@@ -3063,7 +3064,7 @@ class S3CopyApp:
                 f"Overwrite warnings: {overwrite_count}",
                 f"Errors: {error_count}",
                 "",
-                "Open the report to review the rows. Choose Overwrite All to continue, or Cancel.",
+                "Open the report to review the rows. Then proceed with copy, including any rows that would overwrite existing files.",
             ]
         else:
             header_text = "Dry run completed with no blocking issues."
@@ -3073,7 +3074,7 @@ class S3CopyApp:
                 f"Overwrite warnings: {overwrite_count}",
                 f"Errors: {error_count}",
                 "",
-                "Open the report if you want a record, then choose Copy Ready Rows Only or Cancel.",
+                "Open the report if you want a record, then proceed with copy or cancel.",
             ]
 
         ttk.Label(body, text=header_text).pack(anchor="w")
@@ -3089,17 +3090,17 @@ class S3CopyApp:
             command=lambda: self._open_report_file(dry_run_report_path),
         ).grid(row=0, column=0, padx=(0, 8))
 
-        if ready_count and (error_count or not overwrite_count):
+        if ready_count:
             ttk.Button(
                 button_row,
-                text="Copy Ready Rows Only",
+                text="Proceed with Copy",
                 command=lambda: (result.__setitem__("value", "ready_only"), dialog.destroy()),
             ).grid(row=0, column=1, padx=(0, 8))
 
         if overwrite_count:
             ttk.Button(
                 button_row,
-                text="Overwrite All Ready Rows",
+                text="Proceed and Overwrite Warnings",
                 command=lambda: (result.__setitem__("value", "overwrite_all"), dialog.destroy()),
             ).grid(row=0, column=2, padx=(0, 8))
 
@@ -3109,6 +3110,7 @@ class S3CopyApp:
             command=lambda: dialog.destroy(),
         ).grid(row=0, column=3)
 
+        self._present_modal_dialog(dialog)
         dialog.wait_window()
         return result["value"]
 
@@ -3659,6 +3661,24 @@ class S3CopyApp:
         if "error" in result:
             raise result["error"]
         return result.get("value")
+
+    def _present_modal_dialog(self, dialog: tk.Toplevel) -> None:
+        self.root.update_idletasks()
+        dialog.update_idletasks()
+
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_width = max(self.root.winfo_width(), 1)
+        root_height = max(self.root.winfo_height(), 1)
+        dialog_width = max(dialog.winfo_reqwidth(), dialog.winfo_width(), 1)
+        dialog_height = max(dialog.winfo_reqheight(), dialog.winfo_height(), 1)
+
+        centered_x = root_x + max((root_width - dialog_width) // 2, 0)
+        centered_y = root_y + max((root_height - dialog_height) // 2, 0)
+        dialog.geometry(f"+{centered_x}+{centered_y}")
+        dialog.deiconify()
+        dialog.lift()
+        dialog.focus_force()
 
     def _build_caption_paths(self, user_input: UserInput) -> ResolvedS3Paths | None:
         if not user_input.current_caption_name or not user_input.desired_caption_name:
@@ -4477,6 +4497,7 @@ class S3CopyApp:
             command=lambda: dialog.destroy(),
         ).grid(row=0, column=2)
 
+        self._present_modal_dialog(dialog)
         dialog.wait_window()
         return result["value"]
 
