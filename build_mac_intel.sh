@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYENV_ROOT_X86="$ROOT_DIR/.pyenv-x86"
-PYTHON_VERSION_X86="${PYTHON_VERSION_X86:-3.13.1}"
+PYTHON_VERSION_X86="${PYTHON_VERSION_X86:-3.12.9}"
 PYTHON_X86="$PYENV_ROOT_X86/versions/$PYTHON_VERSION_X86/bin/python3"
 VENV_X86="$ROOT_DIR/.venv-x86"
 PYINSTALLER="$VENV_X86/bin/pyinstaller"

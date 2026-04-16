@@ -4,6 +4,8 @@ __pycache__/
 .venv/
 .venv-x86/
 .pyenv-x86/
+.build-x86-tcltk/
+.x86-tcltk/
 *.spec
 build/
 dist/
