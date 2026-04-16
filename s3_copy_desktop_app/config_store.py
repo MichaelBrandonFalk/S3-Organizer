@@ -27,9 +27,9 @@ class AppConfig:
     Do not store secrets in this file.
     """
 
-    source_bucket: str = "gacm-deliver-vod"
+    source_bucket: str = "REPLACE_SOURCE_BUCKET"
     source_prefix: str = ""
-    dest_bucket: str = "gacm-axinom-staging"
+    dest_bucket: str = "REPLACE_DEST_BUCKET"
     dest_prefix: str = ""
     aws_region: str = ""
     credential_mode: str = "keychain"

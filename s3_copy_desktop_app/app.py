@@ -288,9 +288,9 @@ class SettingsDialog(tk.Toplevel):
 
         source_example = (
             "Example from command:\n"
-            "aws s3 cp s3://gacm-masters/SVOD_Trailers/A_Belgian_Chocolate_Christmas_Trailer_16-9_1920x1080.mov ...\n"
-            "Source Bucket = gacm-masters\n"
-            "Source Prefix = SVOD_Trailers\n"
+            "aws s3 cp s3://your-source-bucket/path/to/source-file.mov ...\n"
+            "Source Bucket = your-source-bucket\n"
+            "Source Prefix = path/to\n"
             "Leave Source Prefix blank if file is in bucket root."
         )
         ttk.Label(self, text=source_example, wraplength=560).grid(
@@ -307,9 +307,9 @@ class SettingsDialog(tk.Toplevel):
 
         destination_example = (
             "Destination example from same command:\n"
-            "aws s3 cp ... s3://gacm-axinom-staging/TEST/test_trailer/belgian_chocolate_trailer.mov\n"
-            "Destination Bucket = gacm-axinom-staging\n"
-            "Destination Prefix = TEST/test_trailer\n"
+            "aws s3 cp ... s3://your-destination-bucket/path/to/destination-file.mov\n"
+            "Destination Bucket = your-destination-bucket\n"
+            "Destination Prefix = path/to\n"
             "Leave Destination Prefix blank to write to bucket root."
         )
         ttk.Label(self, text=destination_example, wraplength=560).grid(
