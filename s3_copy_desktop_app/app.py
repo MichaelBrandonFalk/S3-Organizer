@@ -2165,11 +2165,12 @@ class S3CopyApp:
         return report_path
 
     @staticmethod
-    def _summarize_simplified_bulk_rows(raw_rows: list[dict]) -> tuple[int, int, int]:
+    def _summarize_simplified_bulk_rows(raw_rows: list[dict]) -> tuple[int, int, int, int]:
         ready_count = sum(1 for row in raw_rows if str(row.get("status", "")) == "ready")
         overwrite_count = sum(1 for row in raw_rows if str(row.get("status", "")) == "overwrite_warning")
+        internal_conflict_count = sum(1 for row in raw_rows if str(row.get("status", "")) == "internal_conflict")
         error_count = sum(1 for row in raw_rows if str(row.get("status", "")) == "failed")
-        return ready_count, overwrite_count, error_count
+        return ready_count, overwrite_count, internal_conflict_count, error_count
 
     def _format_simplified_bulk_resume_summary(self, checkpoint: dict) -> str:
         phase_label = self._checkpoint_phase_label(str(checkpoint.get("phase", "dry_run")))
@@ -2178,12 +2179,13 @@ class S3CopyApp:
         paused_text = " Paused." if checkpoint.get("paused") else ""
 
         if checkpoint.get("phase") in {"dry_run", "awaiting_confirmation"}:
-            ready_count, overwrite_count, error_count = self._summarize_simplified_bulk_rows(
+            ready_count, overwrite_count, internal_conflict_count, error_count = self._summarize_simplified_bulk_rows(
                 checkpoint.get("dry_run_rows", [])
             )
             return (
                 f"Resume available: {phase_label} {next_index}/{total_rows} row(s) processed."
-                f" Ready {ready_count}, overwrite warnings {overwrite_count}, errors {error_count}.{paused_text}"
+                f" Ready {ready_count}, internal conflicts {internal_conflict_count},"
+                f" overwrite warnings {overwrite_count}, errors {error_count}.{paused_text}"
             )
 
         success_count = sum(1 for row in checkpoint.get("copy_rows", []) if str(row.get("status", "")) == "success")
@@ -2219,35 +2221,51 @@ class S3CopyApp:
         self,
         copy_items: list[tuple[str, ResolvedS3Paths]],
         checkpoint: dict,
-    ) -> list[tuple[str, ResolvedS3Paths]]:
+    ) -> list[tuple[int, str, ResolvedS3Paths, str]]:
         selection = str(checkpoint.get("copy_selection", "")).strip()
         if selection == "all_rows":
-            return list(copy_items)
+            dry_run_rows = checkpoint.get("dry_run_rows", [])
+            return [
+                (
+                    index,
+                    item_label,
+                    item_paths,
+                    str(dry_run_rows[index].get("status", "unvalidated")) if index < len(dry_run_rows) else "unvalidated",
+                )
+                for index, (item_label, item_paths) in enumerate(copy_items)
+            ]
         if not selection:
             overwrite_mode = str(checkpoint.get("overwrite_mode", "")).strip()
             selection = "include_overwrites" if overwrite_mode == "overwrite_all" else "ready_only"
 
-        allowed_statuses = {"ready", "overwrite_warning"} if selection == "include_overwrites" else {"ready"}
+        if selection == "include_internal_conflicts":
+            allowed_statuses = {"ready", "internal_conflict"}
+        elif selection == "include_overwrites":
+            allowed_statuses = {"ready", "overwrite_warning"}
+        else:
+            allowed_statuses = {"ready"}
         dry_run_rows = checkpoint.get("dry_run_rows", [])
-        planned_items: list[tuple[str, ResolvedS3Paths]] = []
-        for item, row in zip(copy_items, dry_run_rows):
-            if str(row.get("status", "")) in allowed_statuses:
-                planned_items.append(item)
+        planned_items: list[tuple[int, str, ResolvedS3Paths, str]] = []
+        for index, (item, row) in enumerate(zip(copy_items, dry_run_rows)):
+            row_status = str(row.get("status", ""))
+            if row_status in allowed_statuses:
+                item_label, item_paths = item
+                planned_items.append((index, item_label, item_paths, row_status))
         return planned_items
 
     @staticmethod
     def _find_pending_overwrite_entries(
-        copy_items: list[tuple[str, ResolvedS3Paths]],
+        copy_items: list[tuple[int, str, ResolvedS3Paths, str]],
         checkpoint: dict,
-    ) -> list[tuple[int, str, ResolvedS3Paths]]:
-        pending_entries: list[tuple[int, str, ResolvedS3Paths]] = []
+    ) -> list[tuple[int, int, str, ResolvedS3Paths, str]]:
+        pending_entries: list[tuple[int, int, str, ResolvedS3Paths, str]] = []
         copy_rows = checkpoint.get("copy_rows", [])
         for row_index, item in enumerate(copy_items):
             if row_index >= len(copy_rows):
                 break
             if str(copy_rows[row_index].get("status", "")) == "overwrite_pending":
-                item_label, item_paths = item
-                pending_entries.append((row_index, item_label, item_paths))
+                original_index, item_label, item_paths, row_status = item
+                pending_entries.append((row_index, original_index, item_label, item_paths, row_status))
         return pending_entries
 
     @staticmethod
@@ -3024,6 +3042,7 @@ class S3CopyApp:
         total_rows: int,
         ready_count: int,
         overwrite_count: int,
+        internal_conflict_count: int,
         error_count: int,
     ) -> str:
         result = {"value": "cancel"}
@@ -3036,45 +3055,27 @@ class S3CopyApp:
         body = ttk.Frame(dialog, padding=16)
         body.pack(fill="both", expand=True)
 
-        if error_count and overwrite_count:
-            header_text = "Dry run found failures and overwrite warnings."
+        if error_count or overwrite_count or internal_conflict_count:
+            header_text = "Dry run found rows that need review."
             detail_lines = [
                 f"Rows checked: {total_rows}",
                 f"Ready: {ready_count}",
+                f"Internal conflicts: {internal_conflict_count}",
                 f"Overwrite warnings: {overwrite_count}",
                 f"Errors: {error_count}",
                 "",
-                "Failed rows will be skipped. Review the report, then proceed with copy for the eligible rows or include overwrite rows.",
-            ]
-        elif error_count:
-            header_text = "Dry run found some failures."
-            detail_lines = [
-                f"Rows checked: {total_rows}",
-                f"Ready: {ready_count}",
-                f"Overwrite warnings: {overwrite_count}",
-                f"Errors: {error_count}",
-                "",
-                "Failed rows will be skipped. Review the report, then proceed with copy for the ready rows or cancel.",
-            ]
-        elif overwrite_count:
-            header_text = "Dry run found destination overwrite warnings."
-            detail_lines = [
-                f"Rows checked: {total_rows}",
-                f"Ready: {ready_count}",
-                f"Overwrite warnings: {overwrite_count}",
-                f"Errors: {error_count}",
-                "",
-                "Open the report to review the rows. Then proceed with copy, including any rows that would overwrite existing files.",
+                "Choose the row scope you want to run.",
             ]
         else:
             header_text = "Dry run completed with no blocking issues."
             detail_lines = [
                 f"Rows checked: {total_rows}",
                 f"Ready: {ready_count}",
+                f"Internal conflicts: {internal_conflict_count}",
                 f"Overwrite warnings: {overwrite_count}",
                 f"Errors: {error_count}",
                 "",
-                "Open the report if you want a record, then proceed with copy or cancel.",
+                "Open the report if you want a record, then choose a copy scope or cancel.",
             ]
 
         ttk.Label(body, text=header_text).pack(anchor="w")
@@ -3093,22 +3094,36 @@ class S3CopyApp:
         if ready_count:
             ttk.Button(
                 button_row,
-                text="Proceed with Copy",
+                text="Copy Safe Rows Only",
                 command=lambda: (result.__setitem__("value", "ready_only"), dialog.destroy()),
             ).grid(row=0, column=1, padx=(0, 8))
 
-        if overwrite_count:
+        if ready_count or internal_conflict_count:
             ttk.Button(
                 button_row,
-                text="Proceed and Overwrite Warnings",
-                command=lambda: (result.__setitem__("value", "overwrite_all"), dialog.destroy()),
+                text="Copy Safe and Internal Conflict Rows",
+                command=lambda: (result.__setitem__("value", "include_internal_conflicts"), dialog.destroy()),
             ).grid(row=0, column=2, padx=(0, 8))
+
+        if ready_count or overwrite_count:
+            ttk.Button(
+                button_row,
+                text="Copy Safe and Overwrite Rows",
+                command=lambda: (result.__setitem__("value", "include_overwrites"), dialog.destroy()),
+            ).grid(row=0, column=3, padx=(0, 8))
+
+        if total_rows:
+            ttk.Button(
+                button_row,
+                text="Copy All Rows",
+                command=lambda: (result.__setitem__("value", "all_rows"), dialog.destroy()),
+            ).grid(row=0, column=4, padx=(0, 8))
 
         ttk.Button(
             button_row,
             text="Cancel",
             command=lambda: dialog.destroy(),
-        ).grid(row=0, column=3)
+        ).grid(row=0, column=5)
 
         self._present_modal_dialog(dialog)
         dialog.wait_window()
@@ -3166,9 +3181,13 @@ class S3CopyApp:
             self._save_simplified_bulk_checkpoint(checkpoint)
             self._set_running(True)
             self._append_log(f"Starting simplified bulk copy without dry run for {len(copy_items)} row(s).")
+            planned_items = [
+                (index, item_label, item_paths, "unvalidated")
+                for index, (item_label, item_paths) in enumerate(copy_items)
+            ]
             threading.Thread(
                 target=self._simplified_bulk_copy_worker,
-                args=(copy_items, checkpoint),
+                args=(planned_items, checkpoint),
                 daemon=True,
             ).start()
             return
@@ -3758,6 +3777,21 @@ class S3CopyApp:
                 "Review destination and run copy again only if you want to replace it."
             ) from error
 
+    @staticmethod
+    def _overwrite_mode_for_simplified_bulk_row(checkpoint: dict, row_status: str) -> str:
+        configured_mode = str(checkpoint.get("overwrite_mode", "deny_existing") or "deny_existing")
+        if configured_mode == "collect_overwrites":
+            return "collect_overwrites"
+
+        selection = str(checkpoint.get("copy_selection", "") or "").strip()
+        if selection == "all_rows":
+            return "overwrite_all"
+        if selection == "include_overwrites":
+            return "overwrite_all" if row_status == "overwrite_warning" else "deny_existing"
+        if selection == "include_internal_conflicts":
+            return "overwrite_all" if row_status == "internal_conflict" else "deny_existing"
+        return configured_mode
+
     def _upload_one_object(self, s3_client, item: DirectUploadItem) -> None:
         self._enqueue_ui(self._append_log, f"Starting {item.label} upload: {item.local_path} -> {item.destination_uri}")
 
@@ -4085,7 +4119,7 @@ class S3CopyApp:
                         self._append_log,
                         (
                             f"Found {len(duplicate_destination_indices)} row(s) with duplicate destination targets in the CSV. "
-                            "Those rows will be marked as failed in the dry-run report and excluded from copy."
+                            "Those rows will be marked as internal conflicts in the dry-run report."
                         ),
                     )
                 for index in range(start_index, len(copy_items)):
@@ -4106,10 +4140,6 @@ class S3CopyApp:
                             item_paths,
                             folder_existence_cache,
                         )
-                        if index in duplicate_destination_indices:
-                            raise UserVisibleError(
-                                "Duplicate destination_uri found in this CSV. Another row targets the same destination object."
-                            )
                         if not object_exists(s3_client, source_ref):
                             raise UserVisibleError("Source file not found.")
 
@@ -4126,7 +4156,21 @@ class S3CopyApp:
                                 raise UserVisibleError(cli_output)
                             cli_message = cli_output
 
-                        if destination_exists:
+                        if index in duplicate_destination_indices:
+                            row = SimplifiedBulkCopyReportRow(
+                                row_label=item_label,
+                                source_uri=item_paths.source_uri,
+                                destination_uri=item_paths.dest_uri,
+                                destination_folder_uri=destination_folder_uri,
+                                destination_folder_status=destination_folder_status,
+                                status="internal_conflict",
+                                message=(
+                                    "Another row in this CSV targets the same destination object. "
+                                    f"{destination_folder_message} {cli_message}"
+                                ).strip(),
+                            )
+                            self._enqueue_ui(self._append_log, f"{item_label}: dry run internal conflict.")
+                        elif destination_exists:
                             row = SimplifiedBulkCopyReportRow(
                                 row_label=item_label,
                                 source_uri=item_paths.source_uri,
@@ -4183,7 +4227,7 @@ class S3CopyApp:
             checkpoint["paused"] = False
             self._save_simplified_bulk_checkpoint(checkpoint)
             dry_run_report_path = self._sync_simplified_bulk_report(checkpoint, "dry_run")
-            ready_count, overwrite_count, error_count = self._summarize_simplified_bulk_rows(
+            ready_count, overwrite_count, internal_conflict_count, error_count = self._summarize_simplified_bulk_rows(
                 checkpoint.get("dry_run_rows", [])
             )
             self._enqueue_ui(
@@ -4196,6 +4240,7 @@ class S3CopyApp:
                 rows_checked,
                 ready_count,
                 overwrite_count,
+                internal_conflict_count,
                 error_count,
             )
 
@@ -4203,8 +4248,18 @@ class S3CopyApp:
                 self._enqueue_ui(self._append_log, "Simplified bulk copy cancelled after dry run review.")
                 return
 
-            overwrite_mode = "overwrite_all" if action == "overwrite_all" else "deny_existing"
-            copy_selection = "include_overwrites" if action == "overwrite_all" else "ready_only"
+            if action == "include_overwrites":
+                overwrite_mode = "overwrite_all"
+                copy_selection = "include_overwrites"
+            elif action == "include_internal_conflicts":
+                overwrite_mode = "deny_existing"
+                copy_selection = "include_internal_conflicts"
+            elif action == "all_rows":
+                overwrite_mode = "overwrite_all"
+                copy_selection = "all_rows"
+            else:
+                overwrite_mode = "deny_existing"
+                copy_selection = "ready_only"
             checkpoint["phase"] = "copy"
             checkpoint["overwrite_mode"] = overwrite_mode
             checkpoint["copy_selection"] = copy_selection
@@ -4246,7 +4301,7 @@ class S3CopyApp:
 
     def _simplified_bulk_copy_worker(
         self,
-        copy_items: list[tuple[str, ResolvedS3Paths]],
+        copy_items: list[tuple[int, str, ResolvedS3Paths, str]],
         checkpoint: dict,
         clear_running: bool = True,
     ) -> None:
@@ -4261,7 +4316,7 @@ class S3CopyApp:
                 start_index = int(checkpoint.get("overwrite_next_index", 0))
                 for pending_offset in range(start_index, len(pending_entries)):
                     self._wait_if_simplified_bulk_paused(checkpoint, "Overwrite pass")
-                    row_index, item_label, item_paths = pending_entries[pending_offset]
+                    row_index, _original_index, item_label, item_paths, _row_status = pending_entries[pending_offset]
                     try:
                         self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="overwrite_all")
                         row = SimplifiedBulkCopyReportRow(
@@ -4301,9 +4356,10 @@ class S3CopyApp:
 
                 for index in range(start_index, len(copy_items)):
                     self._wait_if_simplified_bulk_paused(checkpoint, "Copy")
-                    item_label, item_paths = copy_items[index]
+                    _original_index, item_label, item_paths, row_status = copy_items[index]
+                    row_overwrite_mode = self._overwrite_mode_for_simplified_bulk_row(checkpoint, row_status)
                     try:
-                        self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode=overwrite_mode)
+                        self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode=row_overwrite_mode)
                         row = SimplifiedBulkCopyReportRow(
                             row_label=item_label,
                             source_uri=item_paths.source_uri,
