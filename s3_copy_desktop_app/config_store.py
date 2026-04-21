@@ -23,13 +23,14 @@ CONFIG_PATH = APP_DIR / "config.json"
 class AppConfig:
     """S3 routing configuration for the copy workflow.
 
-    Replace these placeholder defaults in Settings for your environment.
+    Defaults are intentionally blank. Configure these values in Settings for
+    your environment.
     Do not store secrets in this file.
     """
 
-    source_bucket: str = "REPLACE_SOURCE_BUCKET"
+    source_bucket: str = ""
     source_prefix: str = ""
-    dest_bucket: str = "REPLACE_DEST_BUCKET"
+    dest_bucket: str = ""
     dest_prefix: str = ""
     aws_region: str = ""
     credential_mode: str = "keychain"
