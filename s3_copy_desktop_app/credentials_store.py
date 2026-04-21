@@ -16,6 +16,8 @@ USERNAME_ACCESS_KEY = "aws_access_key_id"
 USERNAME_SECRET_KEY = "aws_secret_access_key"
 USERNAME_SESSION_TOKEN = "aws_session_token"
 USERNAME_COMBINED = "aws_credentials_json"
+_CACHE_INITIALIZED = False
+_CACHED_CREDENTIALS: Optional["AwsCredentials"] = None
 
 
 @dataclass
@@ -29,8 +31,18 @@ class KeychainOwnerConflictError(RuntimeError):
     """Raised when the platform credential store rejects writes due to item ownership mismatch."""
 
 
-def load_credentials() -> Optional[AwsCredentials]:
+def _set_cached_credentials(credentials: Optional["AwsCredentials"]) -> Optional["AwsCredentials"]:
+    global _CACHE_INITIALIZED, _CACHED_CREDENTIALS
+    _CACHE_INITIALIZED = True
+    _CACHED_CREDENTIALS = credentials
+    return credentials
+
+
+def load_credentials(refresh: bool = False) -> Optional[AwsCredentials]:
     """Load credentials from the system credential store, returning None when missing."""
+    if _CACHE_INITIALIZED and not refresh:
+        return _CACHED_CREDENTIALS
+
     for service_name in SERVICE_CANDIDATES:
         try:
             combined_value = (keyring.get_password(service_name, USERNAME_COMBINED) or "").strip()
@@ -40,34 +52,38 @@ def load_credentials() -> Optional[AwsCredentials]:
                 secret_key = str(payload.get("secret_access_key", "")).strip()
                 session_token = str(payload.get("session_token", "")).strip()
                 if access_key and secret_key:
-                    return AwsCredentials(
-                        access_key_id=access_key,
-                        secret_access_key=secret_key,
-                        session_token=session_token,
+                    return _set_cached_credentials(
+                        AwsCredentials(
+                            access_key_id=access_key,
+                            secret_access_key=secret_key,
+                            session_token=session_token,
+                        )
                     )
-
-            access_key = (keyring.get_password(service_name, USERNAME_ACCESS_KEY) or "").strip()
-            secret_key = (keyring.get_password(service_name, USERNAME_SECRET_KEY) or "").strip()
-            session_token = (keyring.get_password(service_name, USERNAME_SESSION_TOKEN) or "").strip()
         except KeyringError as error:
             raise RuntimeError(f"Could not read saved credentials: {error}") from error
         except json.JSONDecodeError as error:
             raise RuntimeError(f"Could not read saved credentials: invalid stored credential payload ({error})") from error
 
-        if access_key and secret_key:
-            credentials = AwsCredentials(
-                access_key_id=access_key,
-                secret_access_key=secret_key,
-                session_token=session_token,
-            )
-            if service_name != SERVICE_NAME:
-                try:
-                    save_credentials(credentials)
-                except (RuntimeError, KeychainOwnerConflictError):
-                    pass
-            return credentials
+    try:
+        access_key = (keyring.get_password(LEGACY_SERVICE_NAME, USERNAME_ACCESS_KEY) or "").strip()
+        secret_key = (keyring.get_password(LEGACY_SERVICE_NAME, USERNAME_SECRET_KEY) or "").strip()
+        session_token = (keyring.get_password(LEGACY_SERVICE_NAME, USERNAME_SESSION_TOKEN) or "").strip()
+    except KeyringError as error:
+        raise RuntimeError(f"Could not read saved credentials: {error}") from error
 
-    return None
+    if access_key and secret_key:
+        credentials = AwsCredentials(
+            access_key_id=access_key,
+            secret_access_key=secret_key,
+            session_token=session_token,
+        )
+        try:
+            save_credentials(credentials)
+        except (RuntimeError, KeychainOwnerConflictError):
+            pass
+        return _set_cached_credentials(credentials)
+
+    return _set_cached_credentials(None)
 
 
 def save_credentials(credentials: AwsCredentials) -> None:
@@ -88,6 +104,7 @@ def save_credentials(credentials: AwsCredentials) -> None:
                 "Delete old 's3-copy-desktop-app' credential entries and try Save again."
             ) from error
         raise RuntimeError(f"Could not write saved credentials: {error}") from error
+    _set_cached_credentials(credentials)
 
 
 def clear_credentials() -> None:
@@ -100,3 +117,4 @@ def clear_credentials() -> None:
                 pass
             except KeyringError as error:
                 raise RuntimeError(f"Could not update saved credentials: {error}") from error
+    _set_cached_credentials(None)
