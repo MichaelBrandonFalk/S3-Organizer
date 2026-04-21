@@ -42,5 +42,16 @@ arch -x86_64 "$PYINSTALLER" \
   "${ICON_ARGS[@]}" \
   s3_copy_desktop_app_launcher.py
 
+APP_DIR="$ROOT_DIR/dist/s3Organizer.app"
+TKINTER_EXT="$(find "$APP_DIR/Contents/Frameworks" -path '*lib-dynload/_tkinter.cpython-*-darwin.so' | head -n 1)"
+TK_BUILD_FRAMEWORK="$ROOT_DIR/.x86-tcltk/Library/Frameworks/Tk.framework/Versions/8.6/Tk"
+TK_BUNDLED_FRAMEWORK="@loader_path/../../Tk.framework/Versions/8.6/Tk"
+
+if [[ -n "$TKINTER_EXT" && -f "$TK_BUILD_FRAMEWORK" ]]; then
+  install_name_tool -change "$TK_BUILD_FRAMEWORK" "$TK_BUNDLED_FRAMEWORK" "$TKINTER_EXT" || true
+fi
+
+codesign --force --deep --sign - "$APP_DIR"
+
 echo "Build complete: $ROOT_DIR/dist/s3Organizer.app"
 file "$ROOT_DIR/dist/s3Organizer.app/Contents/MacOS/s3Organizer"
