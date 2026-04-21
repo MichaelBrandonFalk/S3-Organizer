@@ -416,22 +416,7 @@ class SettingsDialog(tk.Toplevel):
             self.access_key_var.set(self._session_credentials.access_key_id)
             self.secret_key_var.set(self._session_credentials.secret_access_key)
             self.session_token_var.set(self._session_credentials.session_token)
-            return
-        if self._use_session_only:
-            return
-
-        try:
-            credentials = load_credentials()
-        except RuntimeError as error:
-            messagebox.showerror("Settings", str(error), parent=self)
-            return
-
-        if not credentials:
-            return
-
-        self.access_key_var.set(credentials.access_key_id)
-        self.secret_key_var.set(credentials.secret_access_key)
-        self.session_token_var.set(credentials.session_token)
+        return
 
     def _clear_stored_credentials(self) -> None:
         if not messagebox.askyesno(
@@ -1207,7 +1192,7 @@ class S3CopyApp:
         self.root.after(100, self._process_ui_queue)
         self.root.after(10_000, self._collect_gc_on_ui_thread)
         self._refresh_preview()
-        self._prompt_for_keychain_credentials_if_missing()
+        self._log_credential_mode_on_startup()
 
     def _build_menu(self) -> None:
         menu_bar = tk.Menu(self.root)
@@ -2086,30 +2071,13 @@ class S3CopyApp:
             variable.trace_add("write", lambda *_: self._refresh_preview())
         self.mode_notebook.bind("<<NotebookTabChanged>>", lambda *_: self._refresh_preview())
 
-    def _prompt_for_keychain_credentials_if_missing(self) -> None:
+    def _log_credential_mode_on_startup(self) -> None:
         if self.use_session_only_credentials:
             self._append_log("Credential mode is session-only. Saved credentials are not used unless you switch modes.")
             return
-
-        try:
-            credentials = self._load_keychain_credentials()
-        except RuntimeError as error:
-            self._append_log(str(error))
-            return
-
-        if credentials:
-            self._append_log(f"Loaded AWS credentials from {_credential_store_label()}.")
-            return
-
         self._append_log(
-            f"No AWS credentials found in {_credential_store_label()}. Default AWS profile credentials may still be used."
+            f"Keychain/default AWS credential mode is active. Stored credentials will be loaded only when needed."
         )
-        if messagebox.askyesno(
-            "AWS Credentials",
-            f"No AWS credentials are currently stored in {_credential_store_label()}. Open Settings to add credentials now?",
-            parent=self.root,
-        ):
-            self.open_settings()
 
     def open_settings(self) -> None:
         SettingsDialog(
