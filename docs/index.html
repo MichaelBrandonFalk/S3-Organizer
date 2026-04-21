@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>S3 Organizer Downloads</title>
+  <style>
+    :root {
+      --bg: #f4f8fb;
+      --panel: #ffffff;
+      --ink: #14324d;
+      --muted: #54708a;
+      --accent: #2b77c4;
+      --accent-dark: #1f5b97;
+      --border: #c7d8e8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(180deg, #eef5fb 0%, #f8fbfe 100%);
+      color: var(--ink);
+    }
+
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 40px 20px 56px;
+    }
+
+    .hero {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 28px;
+      box-shadow: 0 14px 40px rgba(27, 62, 98, 0.08);
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 2.2rem;
+      line-height: 1.1;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 10px 28px rgba(27, 62, 98, 0.06);
+    }
+
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 1.15rem;
+    }
+
+    .card p {
+      margin-bottom: 16px;
+      min-height: 72px;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 11px 14px;
+      border-radius: 10px;
+      text-decoration: none;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .button:hover {
+      background: var(--accent-dark);
+    }
+
+    .meta {
+      margin-top: 26px;
+      padding: 18px 20px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+    }
+
+    .meta ul {
+      margin: 10px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    .footer-links {
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .footer-links a {
+      color: var(--accent-dark);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .footer-links a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>S3 Organizer Downloads</h1>
+      <p>
+        Public download page for the current standard <strong>s3Organizer</strong> desktop builds.
+        These app bundles do not include AWS access keys or secrets. Users provide credentials at runtime.
+      </p>
+
+      <div class="grid">
+        <article class="card">
+          <h2>macOS Apple Silicon</h2>
+          <p>
+            Standard build for Apple Silicon Macs such as M1, M2, M3, and newer.
+            Current public build: <strong>v2.19</strong>.
+          </p>
+          <a class="button" href="https://github.com/MichaelBrandonFalk/S3-Organizer/releases/download/s3Organizer_v2_19-macOS-arm64/s3Organizer_v2_19-macOS-arm64.zip">Download Apple Silicon Zip</a>
+        </article>
+
+        <article class="card">
+          <h2>macOS Intel</h2>
+          <p>
+            Standard build for Intel-based Macs.
+            Current public build: <strong>v2.19</strong>.
+          </p>
+          <a class="button" href="https://github.com/MichaelBrandonFalk/S3-Organizer/releases/download/s3Organizer_v2_19-macOS-intel/s3Organizer_v2_19-macOS-intel.zip">Download Intel Zip</a>
+        </article>
+
+        <article class="card">
+          <h2>Windows</h2>
+          <p>
+            Standard Windows build.
+            Current public build: <strong>v2.18</strong>.
+          </p>
+          <a class="button" href="https://github.com/MichaelBrandonFalk/S3-Organizer/releases/download/s3Organizer_v2_18-windows/s3Organizer_v2_18-windows.zip">Download Windows Zip</a>
+        </article>
+      </div>
+
+      <section class="meta">
+        <p>
+          First launch notes:
+        </p>
+        <ul>
+          <li>macOS may warn on first open because the app is ad-hoc signed, not notarized.</li>
+          <li>Use right-click <strong>Open</strong> or <strong>Open Anyway</strong> the first time if needed.</li>
+          <li>AWS credentials are entered in the app or resolved from the machine’s AWS environment.</li>
+        </ul>
+
+        <div class="footer-links">
+          <a href="https://github.com/MichaelBrandonFalk/S3-Organizer/releases">All Releases</a>
+          <a href="https://github.com/MichaelBrandonFalk/S3-Organizer">Source Repository</a>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>
