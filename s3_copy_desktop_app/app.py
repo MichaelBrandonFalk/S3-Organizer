@@ -405,6 +405,65 @@ class SettingsDialog(tk.Toplevel):
     def _handle_redo_shortcut(self, event) -> str | None:
         return self._undo_manager.redo_from_widget(event.widget)
 
+    def _present_modal_dialog(self, dialog: tk.Toplevel) -> None:
+        self.update_idletasks()
+        dialog.update_idletasks()
+
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_width = max(self.winfo_width(), 1)
+        parent_height = max(self.winfo_height(), 1)
+        dialog_width = max(dialog.winfo_reqwidth(), dialog.winfo_width(), 1)
+        dialog_height = max(dialog.winfo_reqheight(), dialog.winfo_height(), 1)
+
+        centered_x = parent_x + max((parent_width - dialog_width) // 2, 0)
+        centered_y = parent_y + max((parent_height - dialog_height) // 2, 0)
+        dialog.geometry(f"+{centered_x}+{centered_y}")
+        dialog.deiconify()
+        dialog.lift()
+        dialog.focus_force()
+
+    def _prompt_keychain_replace_or_session(self) -> str:
+        result = {"value": "cancel"}
+        dialog = tk.Toplevel(self)
+        dialog.title("Credential Store Blocked")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        body = ttk.Frame(dialog, padding=16)
+        body.pack(fill="both", expand=True)
+
+        message = (
+            f"{_credential_store_label()} blocked saving these credentials.\n\n"
+            "This usually means an older saved S3 Organizer credential entry belongs to a different app build.\n\n"
+            "You can try replacing the old saved entry now, switch to session-only mode, or cancel."
+        )
+        ttk.Label(body, text=message, justify="left", wraplength=520).pack(anchor="w")
+
+        button_row = ttk.Frame(body)
+        button_row.pack(anchor="e", pady=(14, 0))
+
+        ttk.Button(
+            button_row,
+            text="Replace Old Keychain Entry and Retry",
+            command=lambda: (result.__setitem__("value", "replace_and_retry"), dialog.destroy()),
+        ).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(
+            button_row,
+            text="Use Session-Only",
+            command=lambda: (result.__setitem__("value", "session_only"), dialog.destroy()),
+        ).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(
+            button_row,
+            text="Cancel",
+            command=dialog.destroy,
+        ).grid(row=0, column=2)
+
+        self._present_modal_dialog(dialog)
+        dialog.wait_window()
+        return result["value"]
+
     def _toggle_credential_visibility(self) -> None:
         show_character = "" if self.show_credentials_var.get() else "*"
         self.access_key_entry.configure(show=show_character)
@@ -490,30 +549,41 @@ class SettingsDialog(tk.Toplevel):
                 else:
                     save_credentials(entered_credentials)
         except KeychainOwnerConflictError:
-            use_session_only = messagebox.askyesno(
-                "Credential Store Blocked",
-                (
-                    f"{_credential_store_label()} blocked saving these credentials.\n\n"
-                    "Switch to session-only mode and continue without saving them?"
-                ),
-                parent=self,
-            )
-            if not use_session_only:
+            recovery_action = self._prompt_keychain_replace_or_session()
+            if recovery_action == "replace_and_retry":
+                try:
+                    clear_credentials()
+                    save_credentials(entered_credentials)
+                except KeychainOwnerConflictError:
+                    messagebox.showerror(
+                        "Settings",
+                        (
+                            "Could not replace the blocked saved credential entry automatically.\n\n"
+                            "Delete old 's3-copy-desktop-app' or 's3-copy-desktop-app-v2' items in Keychain Access, "
+                            "then try Save again."
+                        ),
+                        parent=self,
+                    )
+                    return
+                except RuntimeError as error:
+                    messagebox.showerror("Settings", str(error), parent=self)
+                    return
+            elif recovery_action == "session_only":
+                credential_mode = "session"
+                self.session_only_var.set(True)
+                session_credentials = entered_credentials
+                messagebox.showinfo(
+                    "Settings",
+                    "Session-only mode enabled. Credentials will be used for this app run only.",
+                    parent=self,
+                )
+            else:
                 messagebox.showerror(
                     "Settings",
                     "Credentials were not saved. You can still use session-only mode.",
                     parent=self,
                 )
                 return
-
-            credential_mode = "session"
-            self.session_only_var.set(True)
-            session_credentials = entered_credentials
-            messagebox.showinfo(
-                "Settings",
-                "Session-only mode enabled. Credentials will be used for this app run only.",
-                parent=self,
-            )
         except RuntimeError as error:
             messagebox.showerror("Settings", str(error), parent=self)
             return
