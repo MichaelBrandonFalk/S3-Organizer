@@ -3487,6 +3487,7 @@ class S3CopyApp:
             if resume_action == "restart":
                 self._delete_simplified_bulk_checkpoint(csv_path)
                 checkpoint = self._build_new_simplified_bulk_checkpoint(csv_path, len(copy_items))
+                checkpoint_loaded = False
                 self._append_log("Restarting Simplified Bulk Copy from the beginning.")
             else:
                 self._append_log(
