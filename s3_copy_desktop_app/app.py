@@ -253,6 +253,10 @@ class DeferredOverwriteError(UserVisibleError):
     """Raised when overwrite handling is intentionally deferred to the end of a bulk run."""
 
 
+class SimplifiedBulkInterrupted(RuntimeError):
+    """Raised when a simplified bulk job is cooperatively paused or cancelled."""
+
+
 class SettingsDialog(tk.Toplevel):
     """Hidden settings for fixed S3 routing and optional keychain credentials."""
 
@@ -1215,8 +1219,10 @@ class S3CopyApp:
         self._closing = False
         self._pause_requested = False
         self._pause_active = False
+        self._cancel_requested = False
         self._undo_manager = EntryUndoManager()
         self.simplified_bulk_dry_run_button: ttk.Button | None = None
+        self.cancel_button: ttk.Button | None = None
 
         self.current_file_name_var = tk.StringVar()
         self.current_caption_name_var = tk.StringVar()
@@ -1992,8 +1998,10 @@ class S3CopyApp:
         action_row.grid(row=3, column=0, sticky="e", pady=(0, 2))
         self.pause_button = ttk.Button(action_row, text="Pause", command=self._on_pause_resume_clicked, state="disabled")
         self.pause_button.grid(row=0, column=0, sticky="e", padx=(0, 8))
+        self.cancel_button = ttk.Button(action_row, text="Cancel", command=self._on_cancel_clicked, state="disabled")
+        self.cancel_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
         self.copy_button = ttk.Button(action_row, text="Copy", command=self.on_copy_clicked)
-        self.copy_button.grid(row=0, column=1, sticky="e")
+        self.copy_button.grid(row=0, column=2, sticky="e")
 
         preview_frame = tk.LabelFrame(
             main,
@@ -2318,6 +2326,7 @@ class S3CopyApp:
         next_index = int(checkpoint.get("next_index", 0))
         total_rows = int(checkpoint.get("total_rows", 0))
         paused_text = " Paused." if checkpoint.get("paused") else ""
+        cancelled_text = " Cancelled." if checkpoint.get("cancelled") else ""
 
         if checkpoint.get("phase") in {"dry_run", "awaiting_confirmation"}:
             ready_count, overwrite_count, internal_conflict_count, error_count = self._summarize_simplified_bulk_rows(
@@ -2326,14 +2335,14 @@ class S3CopyApp:
             return (
                 f"Resume available: {phase_label} {next_index}/{total_rows} row(s) processed."
                 f" Ready {ready_count}, internal conflicts {internal_conflict_count},"
-                f" overwrite warnings {overwrite_count}, errors {error_count}.{paused_text}"
+                f" overwrite warnings {overwrite_count}, errors {error_count}.{paused_text}{cancelled_text}"
             )
 
         success_count = sum(1 for row in checkpoint.get("copy_rows", []) if str(row.get("status", "")) == "success")
         failure_count = sum(1 for row in checkpoint.get("copy_rows", []) if str(row.get("status", "")) == "failed")
         return (
             f"Resume available: {phase_label} {next_index}/{total_rows} row(s) processed."
-            f" Successes {success_count}, failures {failure_count}.{paused_text}"
+            f" Successes {success_count}, failures {failure_count}.{paused_text}{cancelled_text}"
         )
 
     def _build_new_simplified_bulk_checkpoint(self, csv_path: str, total_rows: int) -> dict:
@@ -2347,6 +2356,7 @@ class S3CopyApp:
             "total_rows": total_rows,
             "next_index": 0,
             "paused": False,
+            "cancelled": False,
             "overwrite_mode": "",
             "copy_selection": "",
             "overwrite_next_index": 0,
@@ -2505,14 +2515,25 @@ class S3CopyApp:
             self._pause_active = active
         self._update_pause_button_state()
 
+    def _set_cancel_state(self, requested: bool) -> None:
+        self._cancel_requested = requested
+        self._update_pause_button_state()
+
     def _update_pause_button_state(self) -> None:
         if self._running and self._is_simplified_bulk_mode():
             self.pause_button.configure(
                 state="normal",
                 text="Resume" if (self._pause_requested or self._pause_active) else "Pause",
             )
+            if self.cancel_button is not None:
+                self.cancel_button.configure(
+                    state="disabled" if self._cancel_requested else "normal",
+                    text="Canceling..." if self._cancel_requested else "Cancel",
+                )
         else:
             self.pause_button.configure(state="disabled", text="Pause")
+            if self.cancel_button is not None:
+                self.cancel_button.configure(state="disabled", text="Cancel")
 
     def _on_pause_resume_clicked(self) -> None:
         if not self._running or not self._is_simplified_bulk_mode():
@@ -2526,6 +2547,37 @@ class S3CopyApp:
         self._set_pause_state(True)
         self._append_log("Pause requested. The current row will finish before the session pauses.")
 
+    def _on_cancel_clicked(self) -> None:
+        if not self._running or not self._is_simplified_bulk_mode() or self._cancel_requested:
+            return
+
+        self._set_cancel_state(True)
+        if self._pause_requested or self._pause_active:
+            self._set_pause_state(False, active=False)
+        self._append_log("Cancel requested. The current row will finish before the session stops and writes a progress report.")
+
+    @staticmethod
+    def _simplified_bulk_report_kind_for_phase(phase: str) -> str:
+        if phase in {"dry_run", "awaiting_confirmation"}:
+            return "dry_run"
+        return "copy"
+
+    def _cancel_simplified_bulk_if_requested(self, checkpoint: dict, phase_label: str) -> None:
+        if not self._cancel_requested:
+            return
+
+        checkpoint["paused"] = False
+        checkpoint["cancelled"] = True
+        self._save_simplified_bulk_checkpoint(checkpoint)
+        report_kind = self._simplified_bulk_report_kind_for_phase(str(checkpoint.get("phase", "dry_run")))
+        report_path = self._sync_simplified_bulk_report(checkpoint, report_kind)
+        self._enqueue_ui(
+            self._append_log,
+            f"{phase_label} cancelled. Progress report written to {report_path}",
+        )
+        self._enqueue_ui(self._update_simplified_bulk_summary)
+        raise SimplifiedBulkInterrupted(str(report_path))
+
     def _wait_if_simplified_bulk_paused(self, checkpoint: dict, phase_label: str) -> None:
         if not self._pause_requested:
             return
@@ -2533,10 +2585,18 @@ class S3CopyApp:
         if not checkpoint.get("paused"):
             checkpoint["paused"] = True
             self._save_simplified_bulk_checkpoint(checkpoint)
-            self._enqueue_ui(self._append_log, f"{phase_label} paused. Click Resume to continue.")
+            report_kind = self._simplified_bulk_report_kind_for_phase(str(checkpoint.get("phase", "dry_run")))
+            report_path = self._sync_simplified_bulk_report(checkpoint, report_kind)
+            self._enqueue_ui(self._append_log, f"{phase_label} paused. Progress report written to {report_path}. Click Resume to continue.")
+            self._enqueue_ui(self._update_simplified_bulk_summary)
 
         self._enqueue_ui(self._set_pause_state, True, True)
         while self._pause_requested and not self._closing:
+            if self._cancel_requested:
+                checkpoint["paused"] = False
+                self._save_simplified_bulk_checkpoint(checkpoint)
+                self._enqueue_ui(self._set_pause_state, False, False)
+                self._cancel_simplified_bulk_if_requested(checkpoint, phase_label)
             time.sleep(0.2)
 
         checkpoint["paused"] = False
@@ -3436,6 +3496,7 @@ class S3CopyApp:
             checkpoint = self._build_new_simplified_bulk_checkpoint(csv_path, len(copy_items))
 
         self._set_pause_state(False, active=False)
+        self._set_cancel_state(False)
 
         if not SIMPLIFIED_BULK_REQUIRE_DRY_RUN and not checkpoint_loaded:
             confirm_message = (
@@ -3453,6 +3514,7 @@ class S3CopyApp:
             checkpoint["next_index"] = 0
             checkpoint["overwrite_next_index"] = 0
             checkpoint["paused"] = False
+            checkpoint["cancelled"] = False
             checkpoint["copy_rows"] = []
             self._save_simplified_bulk_checkpoint(checkpoint)
             self._set_running(True)
@@ -3541,6 +3603,7 @@ class S3CopyApp:
             checkpoint = self._build_new_simplified_bulk_checkpoint(csv_path, len(copy_items))
 
         self._set_pause_state(False, active=False)
+        self._set_cancel_state(False)
         self._set_running(True)
         self._append_log(f"Starting optional simplified bulk dry run for {len(copy_items)} row(s).")
         threading.Thread(
@@ -3894,6 +3957,7 @@ class S3CopyApp:
                 self.bulk_copy_button.configure(state="normal")
                 self.settings_menu.entryconfigure(self.bulk_menu_index, state="normal")
             self._set_pause_state(False, active=False)
+            self._set_cancel_state(False)
             if self.simplified_bulk_dry_run_button is not None:
                 self.simplified_bulk_dry_run_button.configure(state="normal")
 
@@ -4452,6 +4516,7 @@ class S3CopyApp:
             if checkpoint.get("phase") != "awaiting_confirmation":
                 checkpoint["phase"] = "dry_run"
                 start_index = int(checkpoint.get("next_index", 0))
+                checkpoint["cancelled"] = False
                 duplicate_destination_indices = self._find_duplicate_destination_indices(copy_items)
                 folder_existence_cache: dict[tuple[str, str], bool] = {}
                 if duplicate_destination_indices and start_index == 0:
@@ -4463,7 +4528,9 @@ class S3CopyApp:
                         ),
                     )
                 for index in range(start_index, len(copy_items)):
+                    self._cancel_simplified_bulk_if_requested(checkpoint, "Dry run")
                     self._wait_if_simplified_bulk_paused(checkpoint, "Dry run")
+                    self._cancel_simplified_bulk_if_requested(checkpoint, "Dry run")
                     item_label, item_paths = copy_items[index]
                     source_ref, dest_ref = self._build_s3_ref_from_paths(item_paths)
                     destination_folder_uri = ""
@@ -4565,6 +4632,7 @@ class S3CopyApp:
 
             checkpoint["phase"] = "awaiting_confirmation"
             checkpoint["paused"] = False
+            checkpoint["cancelled"] = False
             self._save_simplified_bulk_checkpoint(checkpoint)
             dry_run_report_path = self._sync_simplified_bulk_report(checkpoint, "dry_run")
             ready_count, overwrite_count, internal_conflict_count, error_count = self._summarize_simplified_bulk_rows(
@@ -4585,7 +4653,13 @@ class S3CopyApp:
             )
 
             if action == "cancel":
-                self._enqueue_ui(self._append_log, "Simplified bulk copy cancelled after dry run review.")
+                checkpoint["cancelled"] = True
+                self._save_simplified_bulk_checkpoint(checkpoint)
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Simplified bulk copy cancelled after dry run review. Progress report written to {dry_run_report_path}",
+                )
+                self._enqueue_ui(self._update_simplified_bulk_summary)
                 return
 
             if action == "include_overwrites":
@@ -4603,6 +4677,7 @@ class S3CopyApp:
             checkpoint["phase"] = "copy"
             checkpoint["overwrite_mode"] = overwrite_mode
             checkpoint["copy_selection"] = copy_selection
+            checkpoint["cancelled"] = False
             planned_items = self._build_simplified_bulk_copy_plan(copy_items, checkpoint)
             if not planned_items:
                 self._enqueue_ui(
@@ -4619,12 +4694,15 @@ class S3CopyApp:
 
             checkpoint["next_index"] = int(len(checkpoint.get("copy_rows", [])))
             checkpoint["paused"] = False
+            checkpoint["cancelled"] = False
             self._save_simplified_bulk_checkpoint(checkpoint)
             self._enqueue_ui(
                 self._append_log,
                 f"Dry run approved. Starting actual simplified bulk copy for {len(planned_items)} selected row(s).",
             )
             self._simplified_bulk_copy_worker(planned_items, checkpoint, clear_running=False)
+        except SimplifiedBulkInterrupted:
+            pass
         except RuntimeError as error:
             self._enqueue_ui(self._append_log, f"Configuration error: {error}")
             self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
@@ -4654,8 +4732,11 @@ class S3CopyApp:
             if phase == "copy_overwrite":
                 pending_entries = self._find_pending_overwrite_entries(copy_items, checkpoint)
                 start_index = int(checkpoint.get("overwrite_next_index", 0))
+                checkpoint["cancelled"] = False
                 for pending_offset in range(start_index, len(pending_entries)):
+                    self._cancel_simplified_bulk_if_requested(checkpoint, "Overwrite pass")
                     self._wait_if_simplified_bulk_paused(checkpoint, "Overwrite pass")
+                    self._cancel_simplified_bulk_if_requested(checkpoint, "Overwrite pass")
                     row_index, _original_index, item_label, item_paths, _row_status = pending_entries[pending_offset]
                     try:
                         self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="overwrite_all")
@@ -4688,14 +4769,18 @@ class S3CopyApp:
                     checkpoint["copy_rows"][row_index] = asdict(row)
                     checkpoint["overwrite_next_index"] = pending_offset + 1
                     checkpoint["paused"] = False
+                    checkpoint["cancelled"] = False
                     self._save_simplified_bulk_checkpoint(checkpoint)
                     report_path = self._sync_simplified_bulk_report(checkpoint, "copy")
             else:
                 checkpoint["phase"] = "copy"
                 start_index = int(checkpoint.get("next_index", 0))
+                checkpoint["cancelled"] = False
 
                 for index in range(start_index, len(copy_items)):
+                    self._cancel_simplified_bulk_if_requested(checkpoint, "Copy")
                     self._wait_if_simplified_bulk_paused(checkpoint, "Copy")
+                    self._cancel_simplified_bulk_if_requested(checkpoint, "Copy")
                     _original_index, item_label, item_paths, row_status = copy_items[index]
                     row_overwrite_mode = self._overwrite_mode_for_simplified_bulk_row(checkpoint, row_status)
                     try:
@@ -4738,6 +4823,7 @@ class S3CopyApp:
                     checkpoint.setdefault("copy_rows", []).append(asdict(row))
                     checkpoint["next_index"] = index + 1
                     checkpoint["paused"] = False
+                    checkpoint["cancelled"] = False
                     self._save_simplified_bulk_checkpoint(checkpoint)
                     report_path = self._sync_simplified_bulk_report(checkpoint, "copy")
 
@@ -4760,10 +4846,14 @@ class S3CopyApp:
                             failure_count,
                         )
                         if action == "cancel":
+                            checkpoint["cancelled"] = True
+                            self._save_simplified_bulk_checkpoint(checkpoint)
+                            report_path = self._sync_simplified_bulk_report(checkpoint, "copy")
                             self._enqueue_ui(
                                 self._append_log,
-                                "Simplified bulk copy paused at final overwrite review. Resume later to decide.",
+                                f"Simplified bulk copy cancelled at final overwrite review. Progress report written to {report_path}",
                             )
+                            self._enqueue_ui(self._update_simplified_bulk_summary)
                             return
                         if action == "finish_without_overwrites":
                             for row in checkpoint.get("copy_rows", []):
@@ -4829,6 +4919,8 @@ class S3CopyApp:
                 )
             self._delete_simplified_bulk_checkpoint(str(checkpoint["csv_path"]))
             self._enqueue_ui(self._update_simplified_bulk_summary)
+        except SimplifiedBulkInterrupted:
+            pass
         except RuntimeError as error:
             self._enqueue_ui(self._append_log, f"Configuration error: {error}")
             self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
