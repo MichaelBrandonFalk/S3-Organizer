@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import subprocess
+import sys
 from typing import Optional
 
 import keyring
@@ -18,6 +20,7 @@ USERNAME_SESSION_TOKEN = "aws_session_token"
 USERNAME_COMBINED = "aws_credentials_json"
 _CACHE_INITIALIZED = False
 _CACHED_CREDENTIALS: Optional["AwsCredentials"] = None
+IS_MACOS = sys.platform == "darwin"
 
 
 @dataclass
@@ -29,6 +32,47 @@ class AwsCredentials:
 
 class KeychainOwnerConflictError(RuntimeError):
     """Raised when the platform credential store rejects writes due to item ownership mismatch."""
+
+
+def _run_security_command(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["security", *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _macos_delete_password(service_name: str, username: str) -> None:
+    result = _run_security_command(["delete-generic-password", "-s", service_name, "-a", username])
+    if result.returncode == 0:
+        return
+
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+    if "could not be found" in combined_output or "item could not be found" in combined_output:
+        return
+
+    raise RuntimeError(
+        f"macOS security CLI could not delete saved credentials for service '{service_name}' and account '{username}': "
+        f"{(result.stderr or result.stdout).strip() or f'exit {result.returncode}'}"
+    )
+
+
+def _macos_set_password(service_name: str, username: str, password: str) -> None:
+    result = _run_security_command(["add-generic-password", "-U", "-s", service_name, "-a", username, "-w", password])
+    if result.returncode == 0:
+        return
+
+    raise RuntimeError(
+        f"macOS security CLI could not save credentials for service '{service_name}' and account '{username}': "
+        f"{(result.stderr or result.stdout).strip() or f'exit {result.returncode}'}"
+    )
+
+
+def _clear_credentials_macos() -> None:
+    for service_name in SERVICE_CANDIDATES:
+        for username in (USERNAME_COMBINED, USERNAME_ACCESS_KEY, USERNAME_SECRET_KEY, USERNAME_SESSION_TOKEN):
+            _macos_delete_password(service_name, username)
 
 
 def _set_cached_credentials(credentials: Optional["AwsCredentials"]) -> Optional["AwsCredentials"]:
@@ -98,12 +142,17 @@ def save_credentials(credentials: AwsCredentials) -> None:
         )
         keyring.set_password(SERVICE_NAME, USERNAME_COMBINED, payload)
     except KeyringError as error:
-        if "-25244" in str(error):
-            raise KeychainOwnerConflictError(
-                "Could not write saved credentials because an older credential-store item has an incompatible owner. "
-                "Delete old 's3-copy-desktop-app' credential entries and try Save again."
-            ) from error
-        raise RuntimeError(f"Could not write saved credentials: {error}") from error
+        if IS_MACOS and "-25244" in str(error):
+            try:
+                _clear_credentials_macos()
+                _macos_set_password(SERVICE_NAME, USERNAME_COMBINED, payload)
+            except RuntimeError as cli_error:
+                raise KeychainOwnerConflictError(
+                    "Could not write saved credentials because an older credential-store item has an incompatible owner. "
+                    "Delete old 's3-copy-desktop-app' credential entries and try Save again."
+                ) from cli_error
+        else:
+            raise RuntimeError(f"Could not write saved credentials: {error}") from error
     _set_cached_credentials(credentials)
 
 
@@ -116,5 +165,11 @@ def clear_credentials() -> None:
             except keyring.errors.PasswordDeleteError:
                 pass
             except KeyringError as error:
+                if IS_MACOS:
+                    try:
+                        _macos_delete_password(service_name, username)
+                        continue
+                    except RuntimeError as cli_error:
+                        raise RuntimeError(f"Could not update saved credentials: {cli_error}") from cli_error
                 raise RuntimeError(f"Could not update saved credentials: {error}") from error
     _set_cached_credentials(None)
