@@ -40,6 +40,7 @@ from .s3_service import (
     copy_object,
     create_s3_client,
     delete_object,
+    download_object,
     list_objects_under_prefix,
     list_objects_with_metadata_under_prefix,
     object_exists,
@@ -78,6 +79,14 @@ SECTION_TEXT_COLOR = "#0d2d4d"
 CLEAR_BUTTON_WIDTH = 6
 SIMPLIFIED_BULK_REQUIRED_COLUMNS = ("source_uri", "destination_uri")
 BULK_FOLDER_REQUIRED_COLUMNS = ("source_folder_uri", "destination_folder_uri")
+DOWNLOAD_ALLOWED_FILTERS = ("srt", "vtt", "png", "jpg")
+DOWNLOAD_SHEET_URI_COLUMN_ALIASES = (
+    "s3_uri",
+    "uri",
+    "source_uri",
+    "s3_path",
+    "path",
+)
 SIMPLIFIED_BULK_CHECKPOINT_DIR = Path.home() / "Library" / "Application Support" / APP_TITLE / "checkpoints"
 
 
@@ -215,6 +224,30 @@ class DirectUploadItem:
     local_path: str
     destination_ref: S3ObjectRef
     destination_uri: str
+
+
+@dataclass
+class DownloadItem:
+    row_label: str
+    source_ref: S3ObjectRef
+    source_uri: str
+    local_path: str
+
+
+@dataclass
+class DownloadPreview:
+    item_count: int
+    first_source_uri: str
+    download_folder: str
+
+
+@dataclass
+class DownloadReportRow:
+    row_label: str
+    source_uri: str
+    local_path: str
+    status: str
+    message: str
 
 
 @dataclass
@@ -1239,6 +1272,13 @@ class S3CopyApp:
         self.inventory_summary_var = tk.StringVar(
             value="Enter an S3 bucket or prefix URI to export a CSV inventory of everything under that location."
         )
+        self.download_sheet_path_var = tk.StringVar()
+        self.download_prefix_uri_var = tk.StringVar()
+        self.download_filter_var = tk.StringVar(value=DOWNLOAD_ALLOWED_FILTERS[0])
+        self.download_folder_var = tk.StringVar()
+        self.download_summary_var = tk.StringVar(
+            value="Load a spreadsheet of S3 URIs or enter an S3 prefix URI, then choose a local Download To folder."
+        )
         self.folder_copy_source_uri_var = tk.StringVar()
         self.folder_copy_dest_uri_var = tk.StringVar()
         self.folder_copy_summary_var = tk.StringVar(
@@ -1401,6 +1441,7 @@ class S3CopyApp:
         self.rename_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.simplified_bulk_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.inventory_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
+        self.download_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.folder_copy_mode_frame = ttk.Frame(self.mode_notebook, padding=6) if POWER_MODE else None
         self.bulk_folder_copy_mode_frame = ttk.Frame(self.mode_notebook, padding=6) if POWER_MODE else None
         self.mode_notebook.add(self.s3_mode_frame, text="S3 Copy")
@@ -1408,6 +1449,7 @@ class S3CopyApp:
         self.mode_notebook.add(self.rename_mode_frame, text="Rename in Destination")
         self.mode_notebook.add(self.simplified_bulk_mode_frame, text="Simplified Bulk Copy")
         self.mode_notebook.add(self.inventory_mode_frame, text="Inventory")
+        self.mode_notebook.add(self.download_mode_frame, text="Download")
         if self.folder_copy_mode_frame is not None:
             self.mode_notebook.add(self.folder_copy_mode_frame, text="Folder Copy")
         if self.bulk_folder_copy_mode_frame is not None:
@@ -1417,6 +1459,7 @@ class S3CopyApp:
         self.rename_mode_frame.columnconfigure(0, weight=1)
         self.simplified_bulk_mode_frame.columnconfigure(0, weight=1)
         self.inventory_mode_frame.columnconfigure(0, weight=1)
+        self.download_mode_frame.columnconfigure(0, weight=1)
         if self.folder_copy_mode_frame is not None:
             self.folder_copy_mode_frame.columnconfigure(0, weight=1)
         if self.bulk_folder_copy_mode_frame is not None:
@@ -1762,6 +1805,148 @@ class S3CopyApp:
             justify="left",
             wraplength=640,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        download_block = tk.Frame(
+            self.download_mode_frame,
+            bg=CURRENT_BLOCK_BG,
+            bd=1,
+            relief="groove",
+            padx=10,
+            pady=8,
+        )
+        download_block.grid(row=0, column=0, sticky="ew")
+        download_block.columnconfigure(1, weight=1)
+        tk.Label(
+            download_block,
+            text="Spreadsheet File (.csv or .xlsx)",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        self.download_sheet_entry = self._make_entry(
+            download_block,
+            self.download_sheet_path_var,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=0,
+        )
+        self._make_clear_button(
+            download_block,
+            self.download_sheet_path_var,
+            CURRENT_FIELD_BG,
+            row=0,
+            column=2,
+            pady=(0, 6),
+        )
+        tk.Button(
+            download_block,
+            text="Browse...",
+            command=self._browse_download_sheet,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            activebackground=CURRENT_FIELD_BG,
+            activeforeground=SECTION_TEXT_COLOR,
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=0,
+            padx=8,
+            pady=2,
+            takefocus=False,
+        ).grid(row=0, column=3, sticky="e", padx=(8, 0), pady=(0, 6))
+        tk.Label(
+            download_block,
+            text="Or S3 Prefix URI",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=1, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        self._make_entry(
+            download_block,
+            self.download_prefix_uri_var,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=1,
+        )
+        self._make_clear_button(
+            download_block,
+            self.download_prefix_uri_var,
+            CURRENT_FIELD_BG,
+            row=1,
+            column=2,
+            pady=(0, 6),
+        )
+        tk.Label(
+            download_block,
+            text="Download Type",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=2, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        ttk.Combobox(
+            download_block,
+            textvariable=self.download_filter_var,
+            values=DOWNLOAD_ALLOWED_FILTERS,
+            state="readonly",
+            width=18,
+        ).grid(row=2, column=1, sticky="w", pady=(0, 6))
+        tk.Label(
+            download_block,
+            text="Download To Folder",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=3, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        self._make_entry(
+            download_block,
+            self.download_folder_var,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=3,
+        )
+        self._make_clear_button(
+            download_block,
+            self.download_folder_var,
+            CURRENT_FIELD_BG,
+            row=3,
+            column=2,
+            pady=(0, 6),
+        )
+        tk.Button(
+            download_block,
+            text="Browse...",
+            command=self._browse_download_folder,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            activebackground=CURRENT_FIELD_BG,
+            activeforeground=SECTION_TEXT_COLOR,
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=0,
+            padx=8,
+            pady=2,
+            takefocus=False,
+        ).grid(row=3, column=3, sticky="e", padx=(8, 0), pady=(0, 6))
+        tk.Label(
+            download_block,
+            text="Summary",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=4, column=0, sticky="nw", padx=(0, 10))
+        tk.Label(
+            download_block,
+            textvariable=self.download_summary_var,
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+            justify="left",
+            wraplength=640,
+        ).grid(row=4, column=1, columnspan=3, sticky="w")
+        tk.Label(
+            download_block,
+            text=(
+                "Use either a spreadsheet of S3 URIs or a bucket/prefix URI with a download type filter. "
+                "Spreadsheet rows only require a URI column; a format column is optional and ignored for planning."
+            ),
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+            justify="left",
+            wraplength=640,
+        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         if self.folder_copy_mode_frame is not None:
             folder_copy_block = tk.Frame(
@@ -2122,7 +2307,7 @@ class S3CopyApp:
 
         self._append_log(
             (
-                "App started. Use S3 Copy, Direct Upload, Rename, Inventory"
+                "App started. Use S3 Copy, Direct Upload, Rename, Inventory, Download"
                 + (", Folder Copy, Bulk Folder Copy" if POWER_MODE else "")
                 + ", or Simplified Bulk Copy, then click the main action button."
             )
@@ -2139,6 +2324,10 @@ class S3CopyApp:
             self.rename_desired_name_var,
             self.simplified_bulk_csv_path_var,
             self.inventory_path_var,
+            self.download_sheet_path_var,
+            self.download_prefix_uri_var,
+            self.download_filter_var,
+            self.download_folder_var,
             self.folder_copy_source_uri_var,
             self.folder_copy_dest_uri_var,
             self.bulk_folder_csv_path_var,
@@ -2170,7 +2359,7 @@ class S3CopyApp:
         if self._running:
             messagebox.showerror("Bulk Copy", "A copy is already running. Wait for it to finish first.", parent=self.root)
             return
-        if self._is_rename_mode() or self._is_simplified_bulk_mode():
+        if self._is_rename_mode() or self._is_simplified_bulk_mode() or self._is_download_mode():
             messagebox.showerror(
                 "Bulk Mode",
                 "Bulk dialog mode is available for S3 Copy and Direct Upload tabs only.",
@@ -2225,6 +2414,33 @@ class S3CopyApp:
             self.bulk_folder_csv_entry.xview_moveto(1.0)
         except Exception:  # pylint: disable=broad-except
             pass
+
+    def _browse_download_sheet(self) -> None:
+        file_path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Select Download Spreadsheet",
+            filetypes=(
+                ("Spreadsheet files", "*.xlsx *.csv"),
+                ("Excel files", "*.xlsx"),
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ),
+        )
+        if file_path:
+            self.download_sheet_path_var.set(file_path)
+            self.root.after(10, self._show_download_sheet_path_end)
+
+    def _show_download_sheet_path_end(self) -> None:
+        try:
+            self.download_sheet_entry.icursor("end")
+            self.download_sheet_entry.xview_moveto(1.0)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    def _browse_download_folder(self) -> None:
+        folder_path = filedialog.askdirectory(parent=self.root, title="Select Download Folder")
+        if folder_path:
+            self.download_folder_var.set(folder_path)
 
     @staticmethod
     def _simplified_bulk_checkpoint_path(csv_path: str) -> Path:
@@ -2620,6 +2836,10 @@ class S3CopyApp:
         selected_tab = self.mode_notebook.select()
         return selected_tab == str(self.inventory_mode_frame)
 
+    def _is_download_mode(self) -> bool:
+        selected_tab = self.mode_notebook.select()
+        return selected_tab == str(self.download_mode_frame)
+
     def _is_folder_copy_mode(self) -> bool:
         if self.folder_copy_mode_frame is None:
             return False
@@ -2782,6 +3002,272 @@ class S3CopyApp:
                     ]
                 )
         return report_path
+
+    @staticmethod
+    def _normalize_table_header(header: str) -> str:
+        return "_".join(header.strip().lower().replace("-", " ").replace("/", " ").split())
+
+    @staticmethod
+    def _stringify_cell(value) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _read_download_csv_rows(self, file_path: str) -> tuple[list[str], list[dict[str, str]]]:
+        with open(file_path, "r", encoding="utf-8-sig", newline="") as file_handle:
+            sample = file_handle.read(4096)
+            file_handle.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            except csv.Error:
+                dialect = csv.excel
+
+            reader = csv.DictReader(file_handle, dialect=dialect)
+            if not reader.fieldnames:
+                raise ValueError("No header row found in spreadsheet.")
+
+            headers = [self._stringify_cell(header) for header in reader.fieldnames if header]
+            rows = []
+            for row in reader:
+                rows.append({self._stringify_cell(key): self._stringify_cell(value) for key, value in row.items() if key})
+            return headers, rows
+
+    def _read_download_xlsx_rows(self, file_path: str) -> tuple[list[str], list[dict[str, str]]]:
+        try:
+            from openpyxl import load_workbook
+        except ImportError as error:
+            raise RuntimeError("Excel import requires openpyxl. Please install app dependencies.") from error
+
+        workbook = load_workbook(filename=file_path, read_only=True, data_only=True)
+        try:
+            sheet = workbook.active
+            iterator = sheet.iter_rows(values_only=True)
+            header_row = next(iterator, None)
+            if not header_row:
+                raise ValueError("No header row found in spreadsheet.")
+
+            headers = [self._stringify_cell(value) for value in header_row if self._stringify_cell(value)]
+            rows: list[dict[str, str]] = []
+            for row in iterator:
+                mapped_row: dict[str, str] = {}
+                for index, cell_value in enumerate(row):
+                    if index >= len(header_row):
+                        continue
+                    key = self._stringify_cell(header_row[index])
+                    if key:
+                        mapped_row[key] = self._stringify_cell(cell_value)
+                rows.append(mapped_row)
+            return headers, rows
+        finally:
+            workbook.close()
+
+    def _load_download_sheet_items(
+        self,
+        file_path: str,
+        download_folder: str,
+    ) -> tuple[list[str], list[DownloadItem], DownloadPreview | None]:
+        cleaned_path = file_path.strip()
+        errors: list[str] = []
+        items: list[DownloadItem] = []
+
+        if not cleaned_path:
+            return ["Spreadsheet File cannot be blank."], items, None
+        if not os.path.isfile(cleaned_path):
+            return [f"Spreadsheet File not found: {cleaned_path}"], items, None
+
+        suffix = Path(cleaned_path).suffix.lower()
+        if suffix == ".csv":
+            headers, raw_rows = self._read_download_csv_rows(cleaned_path)
+        elif suffix == ".xlsx":
+            headers, raw_rows = self._read_download_xlsx_rows(cleaned_path)
+        else:
+            return ["Download spreadsheet must be a .csv or .xlsx file."], items, None
+
+        normalized_headers = {self._normalize_table_header(header): header for header in headers if header}
+        uri_header = next(
+            (normalized_headers[alias] for alias in DOWNLOAD_SHEET_URI_COLUMN_ALIASES if alias in normalized_headers),
+            None,
+        )
+        if uri_header is None:
+            return ["Spreadsheet must include a URI column such as s3_uri, uri, or source_uri."], items, None
+        if not download_folder.strip():
+            return ["Download To Folder cannot be blank."], items, None
+
+        first_source_uri = ""
+        local_folder = Path(download_folder).expanduser()
+
+        for row_number, row in enumerate(raw_rows, start=2):
+            if not any(self._stringify_cell(value) for value in row.values()):
+                continue
+
+            source_uri = self._stringify_cell(row.get(uri_header, ""))
+            if not source_uri:
+                errors.append(f"Spreadsheet Row {row_number}: URI cannot be blank.")
+                continue
+
+            try:
+                bucket, key = self._parse_s3_uri(source_uri)
+            except ValueError as error:
+                errors.append(f"Spreadsheet Row {row_number}: {error}")
+                continue
+
+            filename = Path(key).name.strip()
+            if not filename:
+                errors.append(f"Spreadsheet Row {row_number}: URI must point to a file object, not a folder.")
+                continue
+
+            if not first_source_uri:
+                first_source_uri = source_uri
+
+            items.append(
+                DownloadItem(
+                    row_label=f"Spreadsheet Row {row_number}",
+                    source_ref=S3ObjectRef(bucket=bucket, key=key),
+                    source_uri=f"s3://{bucket}/{key}",
+                    local_path=str(local_folder / filename),
+                )
+            )
+
+        if not items and not errors:
+            errors.append("No populated download rows were found in the spreadsheet.")
+
+        preview = None
+        if first_source_uri:
+            preview = DownloadPreview(
+                item_count=len(items),
+                first_source_uri=first_source_uri,
+                download_folder=str(local_folder),
+            )
+        return errors, items, preview
+
+    @staticmethod
+    def _download_suffixes_for_filter(download_filter: str) -> tuple[str, ...]:
+        normalized = download_filter.strip().lower()
+        if normalized == "jpg":
+            return (".jpg", ".jpeg")
+        return (f".{normalized}",)
+
+    @staticmethod
+    def _download_report_path() -> Path:
+        downloads_dir = Path.home() / "Downloads"
+        if downloads_dir.exists():
+            base_dir = downloads_dir
+        else:
+            base_dir = Path.home()
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        return base_dir / f"{APP_FILE_SLUG}_download_{timestamp}.csv"
+
+    def _write_download_report(
+        self,
+        report_rows: list[DownloadReportRow],
+        report_path: Path | None = None,
+    ) -> Path:
+        if report_path is None:
+            report_path = self._download_report_path()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8", newline="") as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(["row_label", "source_uri", "local_path", "status", "message"])
+            for row in report_rows:
+                writer.writerow([row.row_label, row.source_uri, row.local_path, row.status, row.message])
+        return report_path
+
+    def _build_download_items_from_prefix(
+        self,
+        s3_client,
+        prefix_uri: str,
+        download_filter: str,
+        download_folder: str,
+    ) -> tuple[list[DownloadItem], DownloadPreview]:
+        bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(prefix_uri)
+        if not prefix:
+            raise UserVisibleError("Prefix downloads require an S3 URI that includes a bucket and folder prefix.")
+
+        suffixes = self._download_suffixes_for_filter(download_filter)
+        self._enqueue_ui(self._append_log, f"Scanning download prefix: {normalized_uri}")
+        listed_objects = list_objects_with_metadata_under_prefix(
+            s3_client,
+            bucket,
+            prefix,
+            progress_callback=lambda msg: self._enqueue_ui(self._append_log, f"Download scan: {msg}"),
+        )
+        matching_objects = [item for item in listed_objects if item.key.lower().endswith(suffixes)]
+        if not matching_objects:
+            pretty_filter = ", ".join(suffixes)
+            raise UserVisibleError(f"No matching files found under {normalized_uri} for {pretty_filter}.")
+
+        local_folder = Path(download_folder).expanduser()
+        items: list[DownloadItem] = []
+        first_source_uri = ""
+        for index, item in enumerate(matching_objects, start=1):
+            filename = Path(item.key).name.strip()
+            if not filename:
+                continue
+            source_uri = f"s3://{item.bucket}/{item.key}"
+            if not first_source_uri:
+                first_source_uri = source_uri
+            items.append(
+                DownloadItem(
+                    row_label=f"Prefix Row {index}",
+                    source_ref=S3ObjectRef(bucket=item.bucket, key=item.key),
+                    source_uri=source_uri,
+                    local_path=str(local_folder / filename),
+                )
+            )
+
+        if not items:
+            raise UserVisibleError("No file objects were found under the selected prefix.")
+
+        return items, DownloadPreview(
+            item_count=len(items),
+            first_source_uri=first_source_uri,
+            download_folder=str(local_folder),
+        )
+
+    def _update_download_summary(self) -> None:
+        sheet_path = self.download_sheet_path_var.get().strip()
+        prefix_uri = self.download_prefix_uri_var.get().strip()
+        download_folder = self.download_folder_var.get().strip()
+        download_filter = self.download_filter_var.get().strip().lower()
+
+        if not sheet_path and not prefix_uri:
+            self.download_summary_var.set(
+                "Load a spreadsheet of S3 URIs or enter an S3 prefix URI, then choose a local Download To folder."
+            )
+            return
+
+        if sheet_path and prefix_uri:
+            self.download_summary_var.set("Use either Spreadsheet File or S3 Prefix URI, not both at the same time.")
+            return
+
+        if not download_folder:
+            self.download_summary_var.set("Choose a local Download To folder before starting a download.")
+            return
+
+        if sheet_path:
+            errors, items, _preview = self._load_download_sheet_items(sheet_path, download_folder)
+            if errors:
+                self.download_summary_var.set(errors[0])
+                return
+            self.download_summary_var.set(
+                f"Ready: {len(items)} URI row(s) loaded from {Path(sheet_path).name}. Downloads will go to {download_folder}."
+            )
+            return
+
+        try:
+            _bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(prefix_uri)
+        except ValueError as error:
+            self.download_summary_var.set(str(error))
+            return
+
+        if download_filter not in DOWNLOAD_ALLOWED_FILTERS:
+            self.download_summary_var.set("Choose a supported download type: srt, vtt, png, or jpg.")
+            return
+
+        scope_text = "bucket root" if not prefix else "prefix"
+        self.download_summary_var.set(
+            f"Ready to scan {scope_text} {normalized_uri} for .{download_filter} files and download them to {download_folder}."
+        )
 
     def _build_folder_copy_items(
         self,
@@ -3639,6 +4125,88 @@ class S3CopyApp:
             daemon=True,
         ).start()
 
+    def _on_download_clicked(self) -> None:
+        sheet_path = self.download_sheet_path_var.get().strip()
+        prefix_uri = self.download_prefix_uri_var.get().strip()
+        download_folder = self.download_folder_var.get().strip()
+        download_filter = self.download_filter_var.get().strip().lower()
+
+        errors: list[str] = []
+        download_items: list[DownloadItem] = []
+        preview: DownloadPreview | None = None
+        worker_mode = ""
+        normalized_prefix_uri = ""
+
+        if bool(sheet_path) == bool(prefix_uri):
+            errors.append("Choose either Spreadsheet File or S3 Prefix URI.")
+        if not download_folder:
+            errors.append("Download To Folder cannot be blank.")
+        if download_filter not in DOWNLOAD_ALLOWED_FILTERS:
+            errors.append("Download Type must be one of: srt, vtt, png, jpg.")
+
+        if errors:
+            messagebox.showerror("Download Validation", "\n".join(errors), parent=self.root)
+            self._append_log(f"Download validation failed: {' | '.join(errors)}")
+            return
+
+        if sheet_path:
+            errors, download_items, preview = self._load_download_sheet_items(sheet_path, download_folder)
+            worker_mode = "sheet"
+        else:
+            try:
+                _bucket, _prefix, normalized_prefix_uri = self._parse_s3_inventory_uri(prefix_uri)
+                if not _prefix:
+                    raise ValueError("S3 Prefix URI must include a bucket and folder prefix for filtered downloads.")
+            except ValueError as error:
+                errors = [str(error)]
+            worker_mode = "prefix"
+
+        if errors:
+            messagebox.showerror("Download Validation", "\n".join(errors), parent=self.root)
+            self._append_log(f"Download validation failed: {' | '.join(errors)}")
+            return
+
+        if worker_mode == "sheet":
+            assert preview is not None
+            confirm_message = (
+                "Download will read the spreadsheet URIs and save them into the selected local folder.\n\n"
+                f"Spreadsheet: {Path(sheet_path).name}\n"
+                f"Rows ready: {preview.item_count}\n"
+                f"First URI: {preview.first_source_uri}\n"
+                f"Download To: {preview.download_folder}\n\n"
+                "Existing local files will not be overwritten. Conflicts will be reported.\n\n"
+                "Continue?"
+            )
+        else:
+            confirm_message = (
+                "Download will inventory the S3 prefix in the background, filter matching files, and download them.\n\n"
+                f"Prefix: {normalized_prefix_uri}\n"
+                f"Download Type: .{download_filter}\n"
+                f"Download To: {download_folder}\n\n"
+                "Existing local files will not be overwritten. Conflicts will be reported.\n\n"
+                "Continue?"
+            )
+
+        if not messagebox.askokcancel("Confirm Download", confirm_message, parent=self.root):
+            self._append_log("Download cancelled before execution.")
+            return
+
+        self._set_running(True)
+        if worker_mode == "sheet":
+            self._append_log(f"Starting spreadsheet download for {len(download_items)} URI row(s).")
+            threading.Thread(
+                target=self._download_worker,
+                args=(download_items, "sheet", "", download_filter, download_folder),
+                daemon=True,
+            ).start()
+        else:
+            self._append_log(f"Starting prefix download scan for {normalized_prefix_uri}.")
+            threading.Thread(
+                target=self._download_worker,
+                args=([], "prefix", normalized_prefix_uri, download_filter, download_folder),
+                daemon=True,
+            ).start()
+
     def _start_bulk_copy(self, rows: list[dict[str, str]]) -> bool:
         if self._running:
             messagebox.showerror("Bulk Copy", "A copy is already running. Wait for it to finish first.", parent=self.root)
@@ -3777,6 +4345,7 @@ class S3CopyApp:
         is_rename_mode = self._is_rename_mode()
         is_simplified_bulk_mode = self._is_simplified_bulk_mode()
         is_inventory_mode = self._is_inventory_mode()
+        is_download_mode = self._is_download_mode()
         is_folder_copy_mode = self._is_folder_copy_mode()
         is_bulk_folder_copy_mode = self._is_bulk_folder_copy_mode()
         self._update_pause_button_state()
@@ -3786,6 +4355,8 @@ class S3CopyApp:
             self.copy_button.configure(text="Run CSV Bulk Copy")
         elif is_inventory_mode:
             self.copy_button.configure(text="Export Inventory")
+        elif is_download_mode:
+            self.copy_button.configure(text="Download")
         elif is_folder_copy_mode:
             self.copy_button.configure(text="Run Folder Copy")
         elif is_bulk_folder_copy_mode:
@@ -3797,7 +4368,14 @@ class S3CopyApp:
         self.bulk_copy_button.configure(text=bulk_label)
         self.settings_menu.entryconfigure(self.bulk_menu_index, label=bulk_label)
 
-        if is_rename_mode or is_simplified_bulk_mode or is_inventory_mode or is_folder_copy_mode or is_bulk_folder_copy_mode:
+        if (
+            is_rename_mode
+            or is_simplified_bulk_mode
+            or is_inventory_mode
+            or is_download_mode
+            or is_folder_copy_mode
+            or is_bulk_folder_copy_mode
+        ):
             self.desired_block.grid_remove()
             self.bulk_copy_button.configure(state="disabled")
             self.settings_menu.entryconfigure(self.bulk_menu_index, state="disabled")
@@ -3872,6 +4450,31 @@ class S3CopyApp:
                     self.source_preview_var.set(normalized_uri)
                 except ValueError as error:
                     self.inventory_summary_var.set(str(error))
+            return
+
+        if is_download_mode:
+            self._update_download_summary()
+            sheet_path = self.download_sheet_path_var.get().strip()
+            prefix_uri = self.download_prefix_uri_var.get().strip()
+            download_folder = self.download_folder_var.get().strip()
+            self.dest_preview_var.set(download_folder)
+            self.source_caption_preview_var.set("")
+            self.dest_caption_preview_var.set("")
+
+            if sheet_path:
+                errors, items, preview = self._load_download_sheet_items(sheet_path, download_folder)
+                if errors or not items or preview is None:
+                    self.source_preview_var.set("")
+                else:
+                    self.source_preview_var.set(preview.first_source_uri)
+            elif prefix_uri:
+                try:
+                    _bucket, _prefix, normalized_uri = self._parse_s3_inventory_uri(prefix_uri)
+                    self.source_preview_var.set(normalized_uri)
+                except ValueError:
+                    self.source_preview_var.set("")
+            else:
+                self.source_preview_var.set("")
             return
 
         if is_folder_copy_mode:
@@ -4258,6 +4861,10 @@ class S3CopyApp:
 
         if self._is_inventory_mode():
             self._on_inventory_clicked()
+            return
+
+        if self._is_download_mode():
+            self._on_download_clicked()
             return
 
         if self._is_folder_copy_mode():
@@ -5242,6 +5849,143 @@ class S3CopyApp:
             self._enqueue_ui(
                 messagebox.showerror,
                 "Inventory Export Failed",
+                f"Unexpected error: {error}",
+                parent=self.root,
+            )
+        finally:
+            self._enqueue_ui(self._set_running, False)
+
+    def _download_worker(
+        self,
+        initial_items: list[DownloadItem],
+        mode: str,
+        prefix_uri: str,
+        download_filter: str,
+        download_folder: str,
+    ) -> None:
+        try:
+            credentials = self._get_active_credentials()
+            s3_client = create_s3_client(self.config, credentials)
+
+            if mode == "prefix":
+                download_items, preview = self._build_download_items_from_prefix(
+                    s3_client,
+                    prefix_uri,
+                    download_filter,
+                    download_folder,
+                )
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Prefix scan found {preview.item_count} matching .{download_filter} file(s). Starting downloads.",
+                )
+            else:
+                download_items = initial_items
+
+            report_rows: list[DownloadReportRow] = []
+            report_path = self._download_report_path()
+            normalized_path_counts: dict[str, int] = {}
+            for item in download_items:
+                normalized_path = os.path.normcase(os.path.abspath(item.local_path))
+                normalized_path_counts[normalized_path] = normalized_path_counts.get(normalized_path, 0) + 1
+
+            success_count = 0
+            failure_count = 0
+
+            for item in download_items:
+                normalized_path = os.path.normcase(os.path.abspath(item.local_path))
+                local_path_obj = Path(item.local_path).expanduser()
+                local_path_obj.parent.mkdir(parents=True, exist_ok=True)
+
+                if normalized_path_counts.get(normalized_path, 0) > 1:
+                    row = DownloadReportRow(
+                        row_label=item.row_label,
+                        source_uri=item.source_uri,
+                        local_path=str(local_path_obj),
+                        status="failed",
+                        message="Another row in this job resolves to the same local file path.",
+                    )
+                    failure_count += 1
+                    report_rows.append(row)
+                    report_path = self._write_download_report(report_rows, report_path)
+                    self._enqueue_ui(self._append_log, f"{item.row_label}: skipped duplicate local target {local_path_obj}")
+                    continue
+
+                if local_path_obj.exists():
+                    row = DownloadReportRow(
+                        row_label=item.row_label,
+                        source_uri=item.source_uri,
+                        local_path=str(local_path_obj),
+                        status="failed",
+                        message="Local file already exists. Download did not overwrite it.",
+                    )
+                    failure_count += 1
+                    report_rows.append(row)
+                    report_path = self._write_download_report(report_rows, report_path)
+                    self._enqueue_ui(self._append_log, f"{item.row_label}: local file exists, skipped {local_path_obj}")
+                    continue
+
+                try:
+                    self._enqueue_ui(self._append_log, f"{item.row_label}: downloading {item.source_uri} -> {local_path_obj}")
+                    download_object(
+                        s3_client,
+                        item.source_ref,
+                        str(local_path_obj),
+                        progress_callback=lambda msg, label=item.row_label: self._enqueue_ui(
+                            self._append_log,
+                            f"{label}: {msg}",
+                        ),
+                    )
+                    row = DownloadReportRow(
+                        row_label=item.row_label,
+                        source_uri=item.source_uri,
+                        local_path=str(local_path_obj),
+                        status="success",
+                        message="Downloaded successfully.",
+                    )
+                    success_count += 1
+                except UserVisibleError as error:
+                    row = DownloadReportRow(
+                        row_label=item.row_label,
+                        source_uri=item.source_uri,
+                        local_path=str(local_path_obj),
+                        status="failed",
+                        message=str(error),
+                    )
+                    failure_count += 1
+                    self._enqueue_ui(self._append_log, f"{item.row_label}: download failed: {error}")
+
+                report_rows.append(row)
+                report_path = self._write_download_report(report_rows, report_path)
+
+            self._play_completion_notification()
+            self._enqueue_ui(
+                self._append_log,
+                (
+                    f"Download finished. Successes: {success_count}. Failures: {failure_count}. "
+                    f"Report written to {report_path}"
+                ),
+            )
+            self._enqueue_ui(
+                messagebox.showinfo,
+                "Download Complete",
+                (
+                    f"Downloaded successfully: {success_count}\n"
+                    f"Failed or skipped: {failure_count}\n\n"
+                    f"Report saved to:\n{report_path}"
+                ),
+                parent=self.root,
+            )
+        except UserVisibleError as error:
+            self._enqueue_ui(self._append_log, f"Download failed: {error}")
+            self._enqueue_ui(messagebox.showerror, "Download Failed", str(error), parent=self.root)
+        except RuntimeError as error:
+            self._enqueue_ui(self._append_log, f"Configuration error: {error}")
+            self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
+        except Exception as error:  # pylint: disable=broad-except
+            self._enqueue_ui(self._append_log, f"Unexpected failure: {error}")
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Download Failed",
                 f"Unexpected error: {error}",
                 parent=self.root,
             )

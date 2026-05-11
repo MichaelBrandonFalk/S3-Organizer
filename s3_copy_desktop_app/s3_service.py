@@ -1,4 +1,4 @@
-"""S3 operations for existence checks and copy-only behavior."""
+"""S3 operations for existence checks, copy-only behavior, and local downloads."""
 
 from __future__ import annotations
 
@@ -228,6 +228,47 @@ def upload_local_file(
                 Config=transfer_config,
             ),
             operation_name="upload_file",
+            allow_retry=False,
+        )
+    except (NoCredentialsError, EndpointConnectionError, BotoCoreError, ClientError) as error:
+        raise map_aws_error(error) from error
+
+
+def download_object(
+    s3_client,
+    source: S3ObjectRef,
+    local_path: str,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> None:
+    transfer_config = TransferConfig(
+        multipart_threshold=64 * 1024**2,
+        multipart_chunksize=DEFAULT_MULTIPART_PART_SIZE_BYTES,
+        max_concurrency=MAX_MULTIPART_WORKERS,
+        use_threads=True,
+    )
+
+    try:
+        response = s3_client.head_object(Bucket=source.bucket, Key=source.key)
+        file_size = int(response.get("ContentLength", 0) or 0)
+    except (NoCredentialsError, EndpointConnectionError, BotoCoreError, ClientError) as error:
+        raise map_aws_error(error) from error
+
+    local_parent = os.path.dirname(local_path)
+    if local_parent:
+        os.makedirs(local_parent, exist_ok=True)
+
+    _notify_progress(progress_callback, f"S3 object size: {format_bytes(file_size)}")
+    _notify_progress(progress_callback, "Starting download...")
+
+    try:
+        _call_with_retries(
+            lambda: s3_client.download_file(
+                source.bucket,
+                source.key,
+                local_path,
+                Config=transfer_config,
+            ),
+            operation_name="download_file",
             allow_retry=False,
         )
     except (NoCredentialsError, EndpointConnectionError, BotoCoreError, ClientError) as error:
