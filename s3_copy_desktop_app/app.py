@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -86,6 +87,71 @@ DOWNLOAD_SHEET_URI_COLUMN_ALIASES = (
     "source_uri",
     "s3_path",
     "path",
+)
+AUDIT_ENDPOINT_ORDER = ("axinom", "youtube", "amazon", "roku", "frndly", "t_plus")
+AUDIT_ART_FIELD_ORDER = (
+    "ca_16x9",
+    "ca_1x1",
+    "ca_4x3",
+    "ca_2x3",
+    "ca_3x4",
+    "bg_16x9",
+    "bg_2x3",
+    "tt_9x5",
+)
+AUDIT_EXTENSION_FIELDS = ("mov", "srt", "vtt")
+AUDIT_ENDPOINT_REQUIREMENTS = {
+    "axinom": {
+        "Movie": {"art": ("ca_16x9", "ca_1x1", "ca_2x3", "bg_16x9", "bg_2x3", "tt_9x5"), "needs_mov": True, "needs_srt": True},
+        "Series": {"art": ("ca_16x9", "ca_1x1", "ca_2x3", "bg_16x9", "bg_2x3", "tt_9x5"), "needs_mov": False, "needs_srt": False},
+        "Season": {"art": ("ca_16x9", "ca_1x1", "ca_2x3", "bg_16x9", "bg_2x3", "tt_9x5"), "needs_mov": False, "needs_srt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+    },
+    "youtube": {
+        "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": True},
+        "Series": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False},
+        "Season": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+    },
+    "amazon": {
+        "Movie": {"art": ("ca_16x9", "ca_2x3", "ca_3x4", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": True},
+        "Series": {"art": (), "needs_mov": False, "needs_srt": False},
+        "Season": {"art": ("ca_16x9", "ca_4x3", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+    },
+    "roku": {
+        "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": True, "needs_srt": True},
+        "Series": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": False, "needs_srt": False},
+        "Season": {"art": (), "needs_mov": False, "needs_srt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+    },
+    "frndly": {
+        "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": True},
+        "Series": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False},
+        "Season": {"art": (), "needs_mov": False, "needs_srt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+    },
+    "t_plus": {
+        "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": True},
+        "Series": {"art": (), "needs_mov": False, "needs_srt": False},
+        "Season": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+    },
+}
+AUDIT_ART_PATTERN = re.compile(r"(?:^|_)(ca|bg|tt)_(\d+x\d+)_(\d+x\d+)(?=\.[^.]+$)", re.IGNORECASE)
+AUDIT_MOVIES_ROOT = "movies"
+AUDIT_SERIES_ROOT = "series"
+AUDIT_SEASON_PATTERN = re.compile(r"^s\d+$", re.IGNORECASE)
+AUDIT_EPISODE_PATTERN = re.compile(r"^e\d+$", re.IGNORECASE)
+AUDIT_REPORT_COLUMNS = (
+    *AUDIT_ENDPOINT_ORDER,
+    "content_type",
+    "title_name",
+    "sku",
+    "display_name",
+    "s3_path",
+    *AUDIT_EXTENSION_FIELDS,
+    *AUDIT_ART_FIELD_ORDER,
 )
 SIMPLIFIED_BULK_CHECKPOINT_DIR = Path.home() / "Library" / "Application Support" / APP_TITLE / "checkpoints"
 
@@ -280,6 +346,42 @@ class FolderCopyPreview:
 class InventoryPreview:
     object_count: int
     first_object_uri: str
+
+
+@dataclass
+class InventoryAuditGroup:
+    content_type: str
+    title_name: str
+    sku: str
+    display_name: str
+    s3_path: str
+    objects: list[S3ListedObject]
+
+
+@dataclass
+class InventoryAuditRow:
+    axinom: str
+    youtube: str
+    amazon: str
+    roku: str
+    frndly: str
+    t_plus: str
+    content_type: str
+    title_name: str
+    sku: str
+    display_name: str
+    s3_path: str
+    mov: str = ""
+    srt: str = ""
+    vtt: str = ""
+    ca_16x9: str = ""
+    ca_1x1: str = ""
+    ca_4x3: str = ""
+    ca_2x3: str = ""
+    ca_3x4: str = ""
+    bg_16x9: str = ""
+    bg_2x3: str = ""
+    tt_9x5: str = ""
 
 
 class DeferredOverwriteError(UserVisibleError):
@@ -1255,6 +1357,7 @@ class S3CopyApp:
         self._cancel_requested = False
         self._undo_manager = EntryUndoManager()
         self.simplified_bulk_dry_run_button: ttk.Button | None = None
+        self.inventory_audit_button: ttk.Button | None = None
         self.cancel_button: ttk.Button | None = None
 
         self.current_file_name_var = tk.StringVar()
@@ -1270,7 +1373,7 @@ class S3CopyApp:
         )
         self.inventory_path_var = tk.StringVar()
         self.inventory_summary_var = tk.StringVar(
-            value="Enter an S3 bucket or prefix URI to export a CSV inventory of everything under that location."
+            value="Enter an S3 bucket or prefix URI to export a CSV inventory or run an endpoint audit for everything under that location."
         )
         self.download_sheet_path_var = tk.StringVar()
         self.download_prefix_uri_var = tk.StringVar()
@@ -1797,8 +1900,8 @@ class S3CopyApp:
         tk.Label(
             inventory_block,
             text=(
-                "Exports a CSV listing every object under the bucket/prefix you enter. "
-                "This is read-only and does not copy, rename, or delete anything."
+                "Exports a CSV listing every object under the bucket/prefix you enter, or audits that inventory "
+                "against built-in endpoint requirements. This is read-only and does not copy, rename, or delete anything."
             ),
             bg=CURRENT_BLOCK_BG,
             fg=SECTION_TEXT_COLOR,
@@ -2185,8 +2288,10 @@ class S3CopyApp:
         self.pause_button.grid(row=0, column=0, sticky="e", padx=(0, 8))
         self.cancel_button = ttk.Button(action_row, text="Cancel", command=self._on_cancel_clicked, state="disabled")
         self.cancel_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        self.inventory_audit_button = ttk.Button(action_row, text="Audit Inventory", command=self._on_inventory_audit_clicked)
+        self.inventory_audit_button.grid(row=0, column=2, sticky="e", padx=(0, 8))
         self.copy_button = ttk.Button(action_row, text="Copy", command=self.on_copy_clicked)
-        self.copy_button.grid(row=0, column=2, sticky="e")
+        self.copy_button.grid(row=0, column=3, sticky="e")
 
         preview_frame = tk.LabelFrame(
             main,
@@ -2977,6 +3082,17 @@ class S3CopyApp:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         return base_dir / f"{APP_FILE_SLUG}_inventory_{timestamp}.csv"
 
+    @staticmethod
+    def _inventory_audit_report_paths() -> tuple[Path, Path]:
+        downloads_dir = Path.home() / "Downloads"
+        if downloads_dir.exists():
+            base_dir = downloads_dir
+        else:
+            base_dir = Path.home()
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        base_name = base_dir / f"{APP_FILE_SLUG}_inventory_audit_{timestamp}"
+        return base_name.with_suffix(".csv"), base_name.with_suffix(".xlsx")
+
     def _write_inventory_report(
         self,
         inventory_uri: str,
@@ -3002,6 +3118,210 @@ class S3CopyApp:
                     ]
                 )
         return report_path
+
+    @staticmethod
+    def _parse_audit_title_and_sku(entity_name: str) -> tuple[str, str]:
+        title_name, separator, sku = entity_name.rpartition("_")
+        if not separator:
+            return entity_name, ""
+        return title_name, sku
+
+    @staticmethod
+    def _dimension_area(dimension_text: str) -> int:
+        width_text, separator, height_text = dimension_text.lower().partition("x")
+        if not separator:
+            return 0
+        try:
+            return int(width_text) * int(height_text)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _extract_audit_art_info(file_name: str) -> tuple[str, str, int] | None:
+        match = AUDIT_ART_PATTERN.search(file_name.lower())
+        if not match:
+            return None
+
+        art_type = match.group(1).lower()
+        aspect_ratio = match.group(2).lower()
+        dimensions = match.group(3).lower()
+        field_name = f"{art_type}_{aspect_ratio}"
+        if field_name not in AUDIT_ART_FIELD_ORDER:
+            return None
+
+        return field_name, dimensions, S3CopyApp._dimension_area(dimensions)
+
+    def _build_inventory_audit_groups(self, listed_objects: list[S3ListedObject]) -> list[InventoryAuditGroup]:
+        groups: dict[tuple[str, str], InventoryAuditGroup] = {}
+
+        for item in listed_objects:
+            key_parts = [segment for segment in item.key.split("/") if segment]
+            root_index = next(
+                (
+                    index
+                    for index, segment in enumerate(key_parts)
+                    if segment.lower() in {AUDIT_MOVIES_ROOT, AUDIT_SERIES_ROOT}
+                ),
+                None,
+            )
+            if root_index is None or len(key_parts) <= root_index + 1:
+                continue
+
+            library_root = key_parts[root_index].lower()
+            entity_name = key_parts[root_index + 1]
+            title_name, sku = self._parse_audit_title_and_sku(entity_name)
+
+            if library_root == AUDIT_MOVIES_ROOT:
+                content_type = "Movie"
+                display_name = title_name
+                group_path_parts = key_parts[: root_index + 2]
+            else:
+                remaining_parts = key_parts[root_index + 2 :]
+                if remaining_parts and AUDIT_SEASON_PATTERN.fullmatch(remaining_parts[0]):
+                    season_segment = remaining_parts[0].lower()
+                    if len(remaining_parts) >= 2 and AUDIT_EPISODE_PATTERN.fullmatch(remaining_parts[1]):
+                        episode_segment = remaining_parts[1].lower()
+                        content_type = "Episode"
+                        display_name = f"{title_name}_{season_segment}_{episode_segment}"
+                        group_path_parts = key_parts[: root_index + 4]
+                    else:
+                        content_type = "Season"
+                        display_name = f"{title_name}_{season_segment}"
+                        group_path_parts = key_parts[: root_index + 3]
+                else:
+                    content_type = "Series"
+                    display_name = title_name
+                    group_path_parts = key_parts[: root_index + 2]
+
+            normalized_group_path = "/".join(group_path_parts).rstrip("/") + "/"
+            group_key = (content_type, f"s3://{item.bucket}/{normalized_group_path}")
+            if group_key not in groups:
+                groups[group_key] = InventoryAuditGroup(
+                    content_type=content_type,
+                    title_name=title_name,
+                    sku=sku,
+                    display_name=display_name,
+                    s3_path=f"s3://{item.bucket}/{normalized_group_path}",
+                    objects=[],
+                )
+            groups[group_key].objects.append(item)
+
+        content_type_order = {"Movie": 0, "Series": 1, "Season": 2, "Episode": 3}
+        return sorted(
+            groups.values(),
+            key=lambda group: (
+                group.title_name.lower(),
+                content_type_order.get(group.content_type, 99),
+                group.display_name.lower(),
+            ),
+        )
+
+    def _build_inventory_audit_rows(self, listed_objects: list[S3ListedObject]) -> list[InventoryAuditRow]:
+        audit_groups = self._build_inventory_audit_groups(listed_objects)
+        if not audit_groups:
+            return []
+
+        audit_rows: list[InventoryAuditRow] = []
+        for group in audit_groups:
+            extension_values = {field_name: "" for field_name in AUDIT_EXTENSION_FIELDS}
+            art_values = {field_name: "" for field_name in AUDIT_ART_FIELD_ORDER}
+            art_areas = {field_name: 0 for field_name in AUDIT_ART_FIELD_ORDER}
+
+            for item in group.objects:
+                file_name = Path(item.key).name
+                file_suffix = Path(file_name).suffix.lower().lstrip(".")
+                if file_suffix in extension_values:
+                    extension_values[file_suffix] = "present"
+
+                art_info = self._extract_audit_art_info(file_name)
+                if art_info is None:
+                    continue
+                art_field, dimension_text, dimension_area = art_info
+                if dimension_area >= art_areas[art_field]:
+                    art_values[art_field] = dimension_text
+                    art_areas[art_field] = dimension_area
+
+            endpoint_values: dict[str, str] = {}
+            for endpoint_name in AUDIT_ENDPOINT_ORDER:
+                endpoint_requirement = AUDIT_ENDPOINT_REQUIREMENTS.get(endpoint_name, {}).get(
+                    group.content_type,
+                    {"art": (), "needs_mov": False, "needs_srt": False},
+                )
+                is_complete = True
+                if endpoint_requirement.get("needs_mov") and extension_values["mov"] != "present":
+                    is_complete = False
+                if endpoint_requirement.get("needs_srt") and extension_values["srt"] != "present":
+                    is_complete = False
+                for required_art_field in endpoint_requirement.get("art", ()):
+                    if not art_values.get(required_art_field, ""):
+                        is_complete = False
+                        break
+                endpoint_values[endpoint_name] = "complete" if is_complete else "incomplete"
+
+            audit_rows.append(
+                InventoryAuditRow(
+                    axinom=endpoint_values["axinom"],
+                    youtube=endpoint_values["youtube"],
+                    amazon=endpoint_values["amazon"],
+                    roku=endpoint_values["roku"],
+                    frndly=endpoint_values["frndly"],
+                    t_plus=endpoint_values["t_plus"],
+                    content_type=group.content_type,
+                    title_name=group.title_name,
+                    sku=group.sku,
+                    display_name=group.display_name,
+                    s3_path=group.s3_path,
+                    mov=extension_values["mov"],
+                    srt=extension_values["srt"],
+                    vtt=extension_values["vtt"],
+                    ca_16x9=art_values["ca_16x9"],
+                    ca_1x1=art_values["ca_1x1"],
+                    ca_4x3=art_values["ca_4x3"],
+                    ca_2x3=art_values["ca_2x3"],
+                    ca_3x4=art_values["ca_3x4"],
+                    bg_16x9=art_values["bg_16x9"],
+                    bg_2x3=art_values["bg_2x3"],
+                    tt_9x5=art_values["tt_9x5"],
+                )
+            )
+
+        return audit_rows
+
+    def _write_inventory_audit_reports(self, audit_rows: list[InventoryAuditRow]) -> tuple[Path, Path]:
+        csv_report_path, xlsx_report_path = self._inventory_audit_report_paths()
+        csv_report_path.parent.mkdir(parents=True, exist_ok=True)
+        row_dicts = [asdict(audit_row) for audit_row in audit_rows]
+
+        with open(csv_report_path, "w", encoding="utf-8", newline="") as file_handle:
+            writer = csv.DictWriter(file_handle, fieldnames=list(AUDIT_REPORT_COLUMNS))
+            writer.writeheader()
+            for row_dict in row_dicts:
+                writer.writerow({column_name: row_dict.get(column_name, "") for column_name in AUDIT_REPORT_COLUMNS})
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font
+        except ImportError as error:
+            raise RuntimeError("Excel audit export requires openpyxl. Please install app dependencies.") from error
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Audit"
+        worksheet.append(list(AUDIT_REPORT_COLUMNS))
+        for header_cell in worksheet[1]:
+            header_cell.font = Font(bold=True)
+
+        for row_dict in row_dicts:
+            worksheet.append([row_dict.get(column_name, "") for column_name in AUDIT_REPORT_COLUMNS])
+
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+        for column_cells in worksheet.columns:
+            max_length = max(len(str(cell.value or "")) for cell in column_cells)
+            worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 40)
+
+        workbook.save(xlsx_report_path)
+        return csv_report_path, xlsx_report_path
 
     @staticmethod
     def _normalize_table_header(header: str) -> str:
@@ -4125,6 +4445,35 @@ class S3CopyApp:
             daemon=True,
         ).start()
 
+    def _on_inventory_audit_clicked(self) -> None:
+        if self._running:
+            return
+
+        inventory_uri = self.inventory_path_var.get().strip()
+        try:
+            _bucket, _prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+        except ValueError as error:
+            messagebox.showerror("Inventory Audit Validation", str(error), parent=self.root)
+            self._append_log(f"Inventory audit validation failed: {error}")
+            return
+
+        confirm_message = (
+            "Inventory audit will scan this S3 location, write the raw inventory CSV, and then produce both "
+            "CSV and Excel audit reports with endpoint completion fields.\n\n"
+            f"Inventory scope: {normalized_uri}\n\n"
+            "Continue?"
+        )
+        if not messagebox.askokcancel("Confirm Inventory Audit", confirm_message, parent=self.root):
+            self._append_log("Inventory audit cancelled before execution.")
+            return
+
+        self._set_running(True)
+        threading.Thread(
+            target=self._inventory_audit_worker,
+            args=(normalized_uri,),
+            daemon=True,
+        ).start()
+
     def _on_download_clicked(self) -> None:
         sheet_path = self.download_sheet_path_var.get().strip()
         prefix_uri = self.download_prefix_uri_var.get().strip()
@@ -4367,6 +4716,12 @@ class S3CopyApp:
         bulk_label = "Bulk Upload..." if is_direct_upload_mode else "Bulk Copy..."
         self.bulk_copy_button.configure(text=bulk_label)
         self.settings_menu.entryconfigure(self.bulk_menu_index, label=bulk_label)
+        if self.inventory_audit_button is not None:
+            if is_inventory_mode:
+                self.inventory_audit_button.grid()
+                self.inventory_audit_button.configure(state="disabled" if self._running else "normal")
+            else:
+                self.inventory_audit_button.grid_remove()
 
         if (
             is_rename_mode
@@ -4440,13 +4795,15 @@ class S3CopyApp:
 
             if not inventory_uri:
                 self.inventory_summary_var.set(
-                    "Enter an S3 bucket or prefix URI to export a CSV inventory of everything under that location."
+                    "Enter an S3 bucket or prefix URI to export a CSV inventory or run an endpoint audit for everything under that location."
                 )
             else:
                 try:
                     _bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
                     scope_text = "bucket root" if not prefix else "prefix"
-                    self.inventory_summary_var.set(f"Ready to export an inventory for {scope_text}: {normalized_uri}")
+                    self.inventory_summary_var.set(
+                        f"Ready to export or audit an inventory for {scope_text}: {normalized_uri}"
+                    )
                     self.source_preview_var.set(normalized_uri)
                 except ValueError as error:
                     self.inventory_summary_var.set(str(error))
@@ -4546,6 +4903,8 @@ class S3CopyApp:
             self.settings_menu.entryconfigure(self.bulk_menu_index, state="disabled")
             if self.simplified_bulk_dry_run_button is not None:
                 self.simplified_bulk_dry_run_button.configure(state="disabled")
+            if self.inventory_audit_button is not None:
+                self.inventory_audit_button.configure(state="disabled")
         else:
             self.copy_button.configure(state="normal")
             if (
@@ -4564,6 +4923,8 @@ class S3CopyApp:
             self._set_cancel_state(False)
             if self.simplified_bulk_dry_run_button is not None:
                 self.simplified_bulk_dry_run_button.configure(state="normal")
+            if self.inventory_audit_button is not None and self._is_inventory_mode():
+                self.inventory_audit_button.configure(state="normal")
 
     def _append_log(self, message: str) -> None:
         if self._closing:
@@ -5849,6 +6210,62 @@ class S3CopyApp:
             self._enqueue_ui(
                 messagebox.showerror,
                 "Inventory Export Failed",
+                f"Unexpected error: {error}",
+                parent=self.root,
+            )
+        finally:
+            self._enqueue_ui(self._set_running, False)
+
+    def _inventory_audit_worker(self, inventory_uri: str) -> None:
+        try:
+            credentials = self._get_active_credentials()
+            s3_client = create_s3_client(self.config, credentials)
+            bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+            self._enqueue_ui(self._append_log, f"Starting inventory audit for {normalized_uri}")
+            listed_objects = list_objects_with_metadata_under_prefix(
+                s3_client,
+                bucket,
+                prefix,
+                progress_callback=lambda msg: self._enqueue_ui(self._append_log, f"Inventory audit scan: {msg}"),
+            )
+            inventory_report_path = self._write_inventory_report(normalized_uri, listed_objects)
+            audit_rows = self._build_inventory_audit_rows(listed_objects)
+            if not audit_rows:
+                raise UserVisibleError(
+                    "Inventory scan completed, but no movie, series, season, or episode title folders were recognized under that path."
+                )
+
+            audit_csv_path, audit_xlsx_path = self._write_inventory_audit_reports(audit_rows)
+            self._enqueue_ui(
+                self._append_log,
+                (
+                    f"Inventory audit finished. Listed {len(listed_objects)} object(s), built {len(audit_rows)} audit row(s). "
+                    f"Inventory CSV: {inventory_report_path} | Audit CSV: {audit_csv_path} | Audit Excel: {audit_xlsx_path}"
+                ),
+            )
+            self._enqueue_ui(
+                messagebox.showinfo,
+                "Inventory Audit Complete",
+                (
+                    f"Objects listed: {len(listed_objects)}\n"
+                    f"Audit rows: {len(audit_rows)}\n\n"
+                    f"Inventory CSV:\n{inventory_report_path}\n\n"
+                    f"Audit CSV:\n{audit_csv_path}\n\n"
+                    f"Audit Excel:\n{audit_xlsx_path}"
+                ),
+                parent=self.root,
+            )
+        except UserVisibleError as error:
+            self._enqueue_ui(self._append_log, f"Inventory audit failed: {error}")
+            self._enqueue_ui(messagebox.showerror, "Inventory Audit Failed", str(error), parent=self.root)
+        except RuntimeError as error:
+            self._enqueue_ui(self._append_log, f"Configuration error: {error}")
+            self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
+        except Exception as error:  # pylint: disable=broad-except
+            self._enqueue_ui(self._append_log, f"Unexpected inventory audit failure: {error}")
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Inventory Audit Failed",
                 f"Unexpected error: {error}",
                 parent=self.root,
             )
