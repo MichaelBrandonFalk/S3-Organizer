@@ -1358,6 +1358,7 @@ class S3CopyApp:
         self._undo_manager = EntryUndoManager()
         self.simplified_bulk_dry_run_button: ttk.Button | None = None
         self.inventory_audit_button: ttk.Button | None = None
+        self.inventory_exclusions_text: ScrolledText | None = None
         self.cancel_button: ttk.Button | None = None
 
         self.current_file_name_var = tk.StringVar()
@@ -1907,7 +1908,27 @@ class S3CopyApp:
             fg=SECTION_TEXT_COLOR,
             justify="left",
             wraplength=640,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 6))
+        tk.Label(
+            inventory_block,
+            text="Optional Folders To Exclude",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=3, column=0, sticky="nw", pady=(4, 0), padx=(0, 10))
+        self.inventory_exclusions_text = ScrolledText(
+            inventory_block,
+            height=4,
+            wrap="word",
+            background="#2b2b2b",
+            foreground="#b9ff77",
+            insertbackground="#b9ff77",
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground="#406585",
+            highlightcolor="#406585",
+        )
+        self.inventory_exclusions_text.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(4, 0))
 
         download_block = tk.Frame(
             self.download_mode_frame,
@@ -2441,6 +2462,9 @@ class S3CopyApp:
             self.desired_caption_name_var,
         ):
             variable.trace_add("write", lambda *_: self._refresh_preview())
+        if self.inventory_exclusions_text is not None:
+            self.inventory_exclusions_text.bind("<KeyRelease>", lambda *_: self._refresh_preview())
+            self.inventory_exclusions_text.bind("<FocusOut>", lambda *_: self._refresh_preview())
         self.mode_notebook.bind("<<NotebookTabChanged>>", lambda *_: self._refresh_preview())
 
     def _log_credential_mode_on_startup(self) -> None:
@@ -3072,6 +3096,55 @@ class S3CopyApp:
         normalized_prefix = normalized_prefix.rstrip("/") + "/"
         return bucket, normalized_prefix, f"s3://{bucket}/{normalized_prefix}"
 
+    def _get_inventory_exclusion_lines(self) -> list[str]:
+        if self.inventory_exclusions_text is None:
+            return []
+
+        raw_text = self.inventory_exclusions_text.get("1.0", "end").strip()
+        if not raw_text:
+            return []
+
+        lines: list[str] = []
+        for raw_line in raw_text.splitlines():
+            cleaned_line = re.sub(r"^\s*(?:\d+[.)]|[-*])\s*", "", raw_line).strip()
+            if cleaned_line:
+                lines.append(cleaned_line)
+        return lines
+
+    def _parse_inventory_excluded_prefixes(self, inventory_uri: str) -> tuple[list[str], list[str]]:
+        bucket, root_prefix, normalized_inventory_uri = self._parse_s3_inventory_uri(inventory_uri)
+        excluded_uris: list[str] = []
+        excluded_prefixes: list[str] = []
+
+        for line in self._get_inventory_exclusion_lines():
+            if line.lower().startswith("s3://"):
+                excluded_bucket, excluded_prefix, normalized_uri = self._parse_s3_inventory_uri(line)
+                if excluded_bucket != bucket:
+                    raise ValueError(
+                        f"Excluded prefix bucket does not match inventory bucket: {normalized_uri}"
+                    )
+            else:
+                normalized_relative = sanitize_folder_path(line)
+                if not normalized_relative:
+                    continue
+                if root_prefix:
+                    excluded_prefix = join_key_parts(root_prefix.rstrip("/"), normalized_relative)
+                else:
+                    excluded_prefix = normalized_relative
+                excluded_prefix = sanitize_folder_path(excluded_prefix).rstrip("/") + "/"
+                normalized_uri = f"s3://{bucket}/{excluded_prefix}"
+
+            if root_prefix and not excluded_prefix.startswith(root_prefix):
+                raise ValueError(
+                    f"Excluded prefix must stay under the inventory path {normalized_inventory_uri}: {normalized_uri}"
+                )
+
+            if excluded_prefix not in excluded_prefixes:
+                excluded_prefixes.append(excluded_prefix)
+                excluded_uris.append(normalized_uri)
+
+        return excluded_prefixes, excluded_uris
+
     @staticmethod
     def _inventory_report_path() -> Path:
         downloads_dir = Path.home() / "Downloads"
@@ -3097,6 +3170,7 @@ class S3CopyApp:
         self,
         inventory_uri: str,
         listed_objects: list[S3ListedObject],
+        excluded_uris: list[str] | None = None,
         report_path: Path | None = None,
     ) -> Path:
         if report_path is None:
@@ -3105,6 +3179,8 @@ class S3CopyApp:
         with open(report_path, "w", encoding="utf-8", newline="") as file_handle:
             writer = csv.writer(file_handle)
             writer.writerow(["inventory_uri", inventory_uri])
+            for excluded_uri in excluded_uris or []:
+                writer.writerow(["excluded_prefix_uri", excluded_uri])
             writer.writerow([])
             writer.writerow(["bucket", "key", "size_bytes", "last_modified", "s3_uri"])
             for item in listed_objects:
@@ -4423,6 +4499,7 @@ class S3CopyApp:
         inventory_uri = self.inventory_path_var.get().strip()
         try:
             _bucket, _prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+            _excluded_prefixes, excluded_uris = self._parse_inventory_excluded_prefixes(normalized_uri)
         except ValueError as error:
             messagebox.showerror("Inventory Validation", str(error), parent=self.root)
             self._append_log(f"Inventory validation failed: {error}")
@@ -4430,9 +4507,14 @@ class S3CopyApp:
 
         confirm_message = (
             "Inventory export will scan this S3 location and write a CSV report.\n\n"
-            f"Location: {normalized_uri}\n\n"
-            "This is read-only and will not copy, rename, or delete anything.\n\n"
-            "Continue?"
+            + f"Location: {normalized_uri}\n"
+            + (
+                "Excluded prefixes:\n" + "\n".join(excluded_uris) + "\n\n"
+                if excluded_uris
+                else "\n"
+            )
+            + "This is read-only and will not copy, rename, or delete anything.\n\n"
+            + "Continue?"
         )
         if not messagebox.askokcancel("Confirm Inventory Export", confirm_message, parent=self.root):
             self._append_log("Inventory export cancelled before execution.")
@@ -4441,7 +4523,7 @@ class S3CopyApp:
         self._set_running(True)
         threading.Thread(
             target=self._inventory_worker,
-            args=(normalized_uri,),
+            args=(normalized_uri, excluded_uris),
             daemon=True,
         ).start()
 
@@ -4452,6 +4534,7 @@ class S3CopyApp:
         inventory_uri = self.inventory_path_var.get().strip()
         try:
             _bucket, _prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+            _excluded_prefixes, excluded_uris = self._parse_inventory_excluded_prefixes(normalized_uri)
         except ValueError as error:
             messagebox.showerror("Inventory Audit Validation", str(error), parent=self.root)
             self._append_log(f"Inventory audit validation failed: {error}")
@@ -4460,8 +4543,13 @@ class S3CopyApp:
         confirm_message = (
             "Inventory audit will scan this S3 location, write the raw inventory CSV, and then produce both "
             "CSV and Excel audit reports with endpoint completion fields.\n\n"
-            f"Inventory scope: {normalized_uri}\n\n"
-            "Continue?"
+            + f"Inventory scope: {normalized_uri}\n"
+            + (
+                "Excluded prefixes:\n" + "\n".join(excluded_uris) + "\n\n"
+                if excluded_uris
+                else "\n"
+            )
+            + "Continue?"
         )
         if not messagebox.askokcancel("Confirm Inventory Audit", confirm_message, parent=self.root):
             self._append_log("Inventory audit cancelled before execution.")
@@ -4470,7 +4558,7 @@ class S3CopyApp:
         self._set_running(True)
         threading.Thread(
             target=self._inventory_audit_worker,
-            args=(normalized_uri,),
+            args=(normalized_uri, excluded_uris),
             daemon=True,
         ).start()
 
@@ -4800,10 +4888,14 @@ class S3CopyApp:
             else:
                 try:
                     _bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+                    _excluded_prefixes, excluded_uris = self._parse_inventory_excluded_prefixes(normalized_uri)
                     scope_text = "bucket root" if not prefix else "prefix"
-                    self.inventory_summary_var.set(
-                        f"Ready to export or audit an inventory for {scope_text}: {normalized_uri}"
+                    exclusion_suffix = (
+                        f" Excluding {len(excluded_uris)} prefix(es)."
+                        if excluded_uris
+                        else ""
                     )
+                    self.inventory_summary_var.set(f"Ready to export or audit an inventory for {scope_text}: {normalized_uri}{exclusion_suffix}")
                     self.source_preview_var.set(normalized_uri)
                 except ValueError as error:
                     self.inventory_summary_var.set(str(error))
@@ -6173,19 +6265,26 @@ class S3CopyApp:
         finally:
             self._enqueue_ui(self._set_running, False)
 
-    def _inventory_worker(self, inventory_uri: str) -> None:
+    def _inventory_worker(self, inventory_uri: str, _excluded_uris: list[str]) -> None:
         try:
             credentials = self._get_active_credentials()
             s3_client = create_s3_client(self.config, credentials)
             bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+            excluded_prefixes, normalized_excluded_uris = self._parse_inventory_excluded_prefixes(normalized_uri)
             self._enqueue_ui(self._append_log, f"Starting inventory scan for {normalized_uri}")
+            if normalized_excluded_uris:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Inventory scan will skip {len(normalized_excluded_uris)} excluded prefix(es).",
+                )
             listed_objects = list_objects_with_metadata_under_prefix(
                 s3_client,
                 bucket,
                 prefix,
+                excluded_prefixes=excluded_prefixes,
                 progress_callback=lambda msg: self._enqueue_ui(self._append_log, f"Inventory scan: {msg}"),
             )
-            report_path = self._write_inventory_report(normalized_uri, listed_objects)
+            report_path = self._write_inventory_report(normalized_uri, listed_objects, excluded_uris=normalized_excluded_uris)
             self._enqueue_ui(
                 self._append_log,
                 f"Inventory export finished. Listed {len(listed_objects)} object(s). Report written to {report_path}",
@@ -6195,6 +6294,12 @@ class S3CopyApp:
                 "Inventory Export Complete",
                 (
                     f"Objects listed: {len(listed_objects)}\n\n"
+                    + (
+                        f"Excluded prefixes: {len(normalized_excluded_uris)}\n\n"
+                        if normalized_excluded_uris
+                        else ""
+                    )
+                    + 
                     f"Report saved to:\n{report_path}"
                 ),
                 parent=self.root,
@@ -6216,19 +6321,30 @@ class S3CopyApp:
         finally:
             self._enqueue_ui(self._set_running, False)
 
-    def _inventory_audit_worker(self, inventory_uri: str) -> None:
+    def _inventory_audit_worker(self, inventory_uri: str, _excluded_uris: list[str]) -> None:
         try:
             credentials = self._get_active_credentials()
             s3_client = create_s3_client(self.config, credentials)
             bucket, prefix, normalized_uri = self._parse_s3_inventory_uri(inventory_uri)
+            excluded_prefixes, normalized_excluded_uris = self._parse_inventory_excluded_prefixes(normalized_uri)
             self._enqueue_ui(self._append_log, f"Starting inventory audit for {normalized_uri}")
+            if normalized_excluded_uris:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Inventory audit will skip {len(normalized_excluded_uris)} excluded prefix(es).",
+                )
             listed_objects = list_objects_with_metadata_under_prefix(
                 s3_client,
                 bucket,
                 prefix,
+                excluded_prefixes=excluded_prefixes,
                 progress_callback=lambda msg: self._enqueue_ui(self._append_log, f"Inventory audit scan: {msg}"),
             )
-            inventory_report_path = self._write_inventory_report(normalized_uri, listed_objects)
+            inventory_report_path = self._write_inventory_report(
+                normalized_uri,
+                listed_objects,
+                excluded_uris=normalized_excluded_uris,
+            )
             audit_rows = self._build_inventory_audit_rows(listed_objects)
             if not audit_rows:
                 raise UserVisibleError(
@@ -6249,6 +6365,12 @@ class S3CopyApp:
                 (
                     f"Objects listed: {len(listed_objects)}\n"
                     f"Audit rows: {len(audit_rows)}\n\n"
+                    + (
+                        f"Excluded prefixes: {len(normalized_excluded_uris)}\n\n"
+                        if normalized_excluded_uris
+                        else ""
+                    )
+                    +
                     f"Inventory CSV:\n{inventory_report_path}\n\n"
                     f"Audit CSV:\n{audit_csv_path}\n\n"
                     f"Audit Excel:\n{audit_xlsx_path}"

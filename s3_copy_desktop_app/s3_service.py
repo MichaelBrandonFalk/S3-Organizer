@@ -127,8 +127,19 @@ def list_objects_with_metadata_under_prefix(
     s3_client,
     bucket: str,
     prefix: str,
+    excluded_prefixes: Optional[list[str]] = None,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> list[S3ListedObject]:
+    normalized_excluded_prefixes = [item.strip("/") for item in (excluded_prefixes or []) if item.strip("/")]
+    if normalized_excluded_prefixes:
+        return _list_objects_with_metadata_under_prefix_excluding(
+            s3_client,
+            bucket,
+            prefix,
+            normalized_excluded_prefixes,
+            progress_callback=progress_callback,
+        )
+
     objects: list[S3ListedObject] = []
     continuation_token: str | None = None
 
@@ -170,6 +181,86 @@ def list_objects_with_metadata_under_prefix(
             break
         continuation_token = response.get("NextContinuationToken")
 
+    return objects
+
+
+def _list_objects_with_metadata_under_prefix_excluding(
+    s3_client,
+    bucket: str,
+    prefix: str,
+    excluded_prefixes: list[str],
+    progress_callback: Optional[ProgressCallback] = None,
+) -> list[S3ListedObject]:
+    objects: list[S3ListedObject] = []
+    normalized_prefix = prefix.strip("/")
+    traversal_prefix = normalized_prefix.rstrip("/") + "/" if normalized_prefix else ""
+
+    def is_excluded(candidate_prefix: str) -> bool:
+        normalized_candidate = candidate_prefix.strip("/")
+        if not normalized_candidate:
+            return False
+        return any(
+            normalized_candidate == excluded_prefix
+            or normalized_candidate.startswith(excluded_prefix + "/")
+            for excluded_prefix in excluded_prefixes
+        )
+
+    def visit(current_prefix: str) -> None:
+        if is_excluded(current_prefix):
+            _notify_progress(progress_callback, f"Skipping excluded prefix s3://{bucket}/{current_prefix}")
+            return
+
+        continuation_token: str | None = None
+        while True:
+            try:
+                request_kwargs = {
+                    "Bucket": bucket,
+                    "Prefix": current_prefix,
+                    "Delimiter": "/",
+                    "MaxKeys": 1000,
+                }
+                if continuation_token:
+                    request_kwargs["ContinuationToken"] = continuation_token
+
+                response = _call_with_retries(
+                    lambda: s3_client.list_objects_v2(**request_kwargs),
+                    progress_callback=progress_callback,
+                    operation_name="list_objects_v2",
+                )
+            except (NoCredentialsError, EndpointConnectionError, BotoCoreError, ClientError) as error:
+                raise map_aws_error(error) from error
+
+            for entry in response.get("Contents", []):
+                key = str(entry.get("Key", "")).strip()
+                if not key or key.endswith("/"):
+                    continue
+                last_modified_value = entry.get("LastModified")
+                if hasattr(last_modified_value, "isoformat"):
+                    last_modified = last_modified_value.isoformat()
+                else:
+                    last_modified = str(last_modified_value or "")
+                objects.append(
+                    S3ListedObject(
+                        bucket=bucket,
+                        key=key,
+                        size_bytes=int(entry.get("Size", 0) or 0),
+                        last_modified=last_modified,
+                    )
+                )
+
+            for common_prefix in response.get("CommonPrefixes", []):
+                child_prefix = str(common_prefix.get("Prefix", "")).strip()
+                if not child_prefix:
+                    continue
+                visit(child_prefix)
+
+            _notify_progress(progress_callback, f"Scanned {len(objects)} object(s) so far...")
+
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+
+    visit(traversal_prefix)
     return objects
 
 
