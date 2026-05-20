@@ -90,11 +90,13 @@ DOWNLOAD_SHEET_URI_COLUMN_ALIASES = (
 )
 AUDIT_ENDPOINT_ORDER = ("axinom", "youtube", "amazon", "roku", "frndly", "t_plus")
 AUDIT_ART_FIELD_ORDER = (
+    "ca_7x3",
     "ca_16x9",
     "ca_1x1",
     "ca_4x3",
     "ca_2x3",
     "ca_3x4",
+    "bg_7x3",
     "bg_16x9",
     "bg_2x3",
     "tt_9x5",
@@ -102,40 +104,40 @@ AUDIT_ART_FIELD_ORDER = (
 AUDIT_EXTENSION_FIELDS = ("mov", "srt", "vtt")
 AUDIT_ENDPOINT_REQUIREMENTS = {
     "axinom": {
-        "Movie": {"art": ("ca_16x9", "ca_1x1", "ca_2x3", "bg_16x9", "bg_2x3", "tt_9x5"), "needs_mov": True, "needs_srt": True},
-        "Series": {"art": ("ca_16x9", "ca_1x1", "ca_2x3", "bg_16x9", "bg_2x3", "tt_9x5"), "needs_mov": False, "needs_srt": False},
-        "Season": {"art": ("ca_16x9", "ca_1x1", "ca_2x3", "bg_16x9", "bg_2x3", "tt_9x5"), "needs_mov": False, "needs_srt": False},
-        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+        "Movie": {"art": ("ca_7x3", "ca_2x3", "ca_3x4", "ca_1x1", "ca_4x3", "ca_16x9", "bg_16x9", "bg_7x3", "tt_9x5"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
+        "Series": {"art": ("ca_7x3", "ca_2x3", "ca_3x4", "ca_1x1", "ca_4x3", "ca_16x9", "bg_16x9", "bg_7x3", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": {"art": ("ca_16x9", "ca_4x3", "bg_16x9"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "youtube": {
-        "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": True},
-        "Series": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False},
-        "Season": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False},
-        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+        "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
+        "Series": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "amazon": {
-        "Movie": {"art": ("ca_16x9", "ca_2x3", "ca_3x4", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": True},
-        "Series": {"art": (), "needs_mov": False, "needs_srt": False},
-        "Season": {"art": ("ca_16x9", "ca_4x3", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False},
-        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+        "Movie": {"art": ("ca_16x9", "ca_2x3", "ca_3x4", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": True, "needs_vtt": False},
+        "Series": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": {"art": ("ca_16x9", "ca_4x3", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True, "needs_vtt": False},
     },
     "roku": {
-        "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": True, "needs_srt": True},
-        "Series": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": False, "needs_srt": False},
-        "Season": {"art": (), "needs_mov": False, "needs_srt": False},
-        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+        "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
+        "Series": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "frndly": {
-        "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": True},
-        "Series": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False},
-        "Season": {"art": (), "needs_mov": False, "needs_srt": False},
-        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+        "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
+        "Series": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "t_plus": {
-        "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": True},
-        "Series": {"art": (), "needs_mov": False, "needs_srt": False},
-        "Season": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False},
-        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True},
+        "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
+        "Series": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
 }
 AUDIT_ART_PATTERN = re.compile(r"(?:^|_)(ca|bg|tt)_(\d+x\d+)_(\d+x\d+)(?=\.[^.]+$)", re.IGNORECASE)
@@ -374,11 +376,13 @@ class InventoryAuditRow:
     mov: str = ""
     srt: str = ""
     vtt: str = ""
+    ca_7x3: str = ""
     ca_16x9: str = ""
     ca_1x1: str = ""
     ca_4x3: str = ""
     ca_2x3: str = ""
     ca_3x4: str = ""
+    bg_7x3: str = ""
     bg_16x9: str = ""
     bg_2x3: str = ""
     tt_9x5: str = ""
@@ -3306,7 +3310,11 @@ class S3CopyApp:
             for item in group.objects:
                 file_name = Path(item.key).name
                 file_suffix = Path(file_name).suffix.lower().lstrip(".")
-                if file_suffix in extension_values:
+                if file_suffix == "mov":
+                    extension_values["mov"] = "present"
+                elif file_suffix == "mp4" and not extension_values["mov"]:
+                    extension_values["mov"] = "mp4"
+                elif file_suffix in {"srt", "vtt"}:
                     extension_values[file_suffix] = "present"
 
                 art_info = self._extract_audit_art_info(file_name)
@@ -3321,12 +3329,14 @@ class S3CopyApp:
             for endpoint_name in AUDIT_ENDPOINT_ORDER:
                 endpoint_requirement = AUDIT_ENDPOINT_REQUIREMENTS.get(endpoint_name, {}).get(
                     group.content_type,
-                    {"art": (), "needs_mov": False, "needs_srt": False},
+                    {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
                 )
                 is_complete = True
-                if endpoint_requirement.get("needs_mov") and extension_values["mov"] != "present":
+                if endpoint_requirement.get("needs_mov") and not extension_values["mov"]:
                     is_complete = False
                 if endpoint_requirement.get("needs_srt") and extension_values["srt"] != "present":
+                    is_complete = False
+                if endpoint_requirement.get("needs_vtt") and extension_values["vtt"] != "present":
                     is_complete = False
                 for required_art_field in endpoint_requirement.get("art", ()):
                     if not art_values.get(required_art_field, ""):
@@ -3350,11 +3360,13 @@ class S3CopyApp:
                     mov=extension_values["mov"],
                     srt=extension_values["srt"],
                     vtt=extension_values["vtt"],
+                    ca_7x3=art_values["ca_7x3"],
                     ca_16x9=art_values["ca_16x9"],
                     ca_1x1=art_values["ca_1x1"],
                     ca_4x3=art_values["ca_4x3"],
                     ca_2x3=art_values["ca_2x3"],
                     ca_3x4=art_values["ca_3x4"],
+                    bg_7x3=art_values["bg_7x3"],
                     bg_16x9=art_values["bg_16x9"],
                     bg_2x3=art_values["bg_2x3"],
                     tt_9x5=art_values["tt_9x5"],
