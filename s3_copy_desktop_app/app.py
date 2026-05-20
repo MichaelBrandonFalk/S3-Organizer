@@ -144,7 +144,7 @@ AUDIT_ART_PATTERN = re.compile(r"(?:^|_)(ca|bg|tt)_(\d+x\d+)_(\d+x\d+)(?=\.[^.]+
 AUDIT_MOVIES_ROOT = "movies"
 AUDIT_SERIES_ROOT = "series"
 AUDIT_SEASON_PATTERN = re.compile(r"^s\d+$", re.IGNORECASE)
-AUDIT_EPISODE_PATTERN = re.compile(r"^e\d+$", re.IGNORECASE)
+AUDIT_EPISODE_PATTERN = re.compile(r"^(e\d+)(?:_las)?$", re.IGNORECASE)
 AUDIT_REPORT_COLUMNS = (
     *AUDIT_ENDPOINT_ORDER,
     "content_type",
@@ -3207,6 +3207,15 @@ class S3CopyApp:
         return title_name, sku
 
     @staticmethod
+    def _parse_audit_episode_segment(segment: str) -> tuple[str, bool] | None:
+        match = AUDIT_EPISODE_PATTERN.fullmatch(segment.strip().lower())
+        if not match:
+            return None
+        normalized_episode = match.group(1).lower()
+        is_las = segment.strip().lower().endswith("_las")
+        return normalized_episode, is_las
+
+    @staticmethod
     def _dimension_area(dimension_text: str) -> int:
         width_text, separator, height_text = dimension_text.lower().partition("x")
         if not separator:
@@ -3256,28 +3265,47 @@ class S3CopyApp:
 
             library_root = key_parts[root_index].lower()
             entity_name = key_parts[root_index + 1]
-            title_name, sku = self._parse_audit_title_and_sku(entity_name)
+            base_title_name, sku = self._parse_audit_title_and_sku(entity_name)
 
             if library_root == AUDIT_MOVIES_ROOT:
                 content_type = "Movie"
-                display_name = title_name
-                group_path_parts = key_parts[: root_index + 2]
+                remaining_parts = key_parts[root_index + 2 :]
+                if remaining_parts and remaining_parts[0].lower() == "feature_las":
+                    title_name = f"{base_title_name}_las"
+                    display_name = title_name
+                    group_path_parts = key_parts[: root_index + 3]
+                elif remaining_parts and remaining_parts[0].lower() == "feature":
+                    title_name = base_title_name
+                    display_name = title_name
+                    group_path_parts = key_parts[: root_index + 3]
+                else:
+                    title_name = base_title_name
+                    display_name = title_name
+                    group_path_parts = key_parts[: root_index + 2]
             else:
                 remaining_parts = key_parts[root_index + 2 :]
                 if remaining_parts and AUDIT_SEASON_PATTERN.fullmatch(remaining_parts[0]):
                     season_segment = remaining_parts[0].lower()
-                    if len(remaining_parts) >= 2 and AUDIT_EPISODE_PATTERN.fullmatch(remaining_parts[1]):
-                        episode_segment = remaining_parts[1].lower()
+                    episode_info = self._parse_audit_episode_segment(remaining_parts[1]) if len(remaining_parts) >= 2 else None
+                    if episode_info is not None:
+                        episode_segment, is_las = episode_info
                         content_type = "Episode"
-                        display_name = f"{title_name}_{season_segment}_{episode_segment}"
+                        title_name = f"{base_title_name}_las" if is_las else base_title_name
+                        display_name = (
+                            f"{base_title_name}_{season_segment}_{episode_segment}_las"
+                            if is_las
+                            else f"{base_title_name}_{season_segment}_{episode_segment}"
+                        )
                         group_path_parts = key_parts[: root_index + 4]
                     else:
                         content_type = "Season"
-                        display_name = f"{title_name}_{season_segment}"
+                        title_name = base_title_name
+                        display_name = f"{base_title_name}_{season_segment}"
                         group_path_parts = key_parts[: root_index + 3]
                 else:
                     content_type = "Series"
-                    display_name = title_name
+                    title_name = base_title_name
+                    display_name = base_title_name
                     group_path_parts = key_parts[: root_index + 2]
 
             normalized_group_path = "/".join(group_path_parts).rstrip("/") + "/"
