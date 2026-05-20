@@ -3229,6 +3229,13 @@ class S3CopyApp:
         if field_name not in AUDIT_ART_FIELD_ORDER:
             return None
 
+        file_suffix = Path(file_name).suffix.lower()
+        if field_name == "tt_9x5":
+            if file_suffix != ".png":
+                return None
+        elif file_suffix != ".jpg":
+            return None
+
         return field_name, dimensions, S3CopyApp._dimension_area(dimensions)
 
     def _build_inventory_audit_groups(self, listed_objects: list[S3ListedObject]) -> list[InventoryAuditGroup]:
