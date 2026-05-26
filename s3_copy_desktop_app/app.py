@@ -89,6 +89,15 @@ DOWNLOAD_SHEET_URI_COLUMN_ALIASES = (
     "path",
 )
 AUDIT_ENDPOINT_ORDER = ("axinom", "youtube", "amazon", "roku", "frndly", "t_plus")
+AUDIT_ENDPOINT_LABELS = {
+    "axinom": "Axinom",
+    "youtube": "YouTube",
+    "amazon": "Amazon",
+    "roku": "Roku",
+    "frndly": "Frndly",
+    "t_plus": "T Plus",
+}
+AUDIT_CONTENT_TYPES = ("Movie", "Series", "Season", "Episode")
 AUDIT_ART_FIELD_ORDER = (
     "ca_7x3",
     "ca_16x9",
@@ -102,6 +111,12 @@ AUDIT_ART_FIELD_ORDER = (
     "tt_9x5",
 )
 AUDIT_EXTENSION_FIELDS = ("mov", "srt", "vtt")
+AUDIT_OPTIONAL_TRACKED_FIELDS = ("bg_2x3",)
+AUDIT_CUSTOM_REQUIREMENT_FIELDS = (
+    *AUDIT_EXTENSION_FIELDS,
+    *(field_name for field_name in AUDIT_ART_FIELD_ORDER if field_name not in AUDIT_OPTIONAL_TRACKED_FIELDS),
+)
+AUDIT_CUSTOM_AUDIT_COLUMN = "custom audit"
 AUDIT_ENDPOINT_REQUIREMENTS = {
     "axinom": {
         "Movie": {"art": ("ca_7x3", "ca_2x3", "ca_3x4", "ca_1x1", "ca_4x3", "ca_16x9", "bg_16x9", "bg_7x3", "tt_9x5"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
@@ -112,30 +127,30 @@ AUDIT_ENDPOINT_REQUIREMENTS = {
     "youtube": {
         "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
         "Series": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
-        "Season": {"art": ("ca_16x9", "ca_1x1", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": None,
         "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "amazon": {
         "Movie": {"art": ("ca_16x9", "ca_2x3", "ca_3x4", "bg_16x9", "tt_9x5"), "needs_mov": True, "needs_srt": True, "needs_vtt": False},
-        "Series": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Series": None,
         "Season": {"art": ("ca_16x9", "ca_4x3", "ca_2x3", "bg_16x9", "tt_9x5"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
         "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": True, "needs_vtt": False},
     },
     "roku": {
         "Movie": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
         "Series": {"art": ("ca_16x9", "ca_2x3", "bg_16x9"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
-        "Season": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": None,
         "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "frndly": {
         "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
         "Series": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
-        "Season": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Season": None,
         "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
     "t_plus": {
         "Movie": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
-        "Series": {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+        "Series": None,
         "Season": {"art": ("ca_16x9", "ca_2x3"), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
         "Episode": {"art": ("bg_16x9",), "needs_mov": True, "needs_srt": False, "needs_vtt": True},
     },
@@ -147,6 +162,7 @@ AUDIT_SEASON_PATTERN = re.compile(r"^s\d+$", re.IGNORECASE)
 AUDIT_EPISODE_PATTERN = re.compile(r"^(e\d+)(?:_las)?$", re.IGNORECASE)
 AUDIT_REPORT_COLUMNS = (
     *AUDIT_ENDPOINT_ORDER,
+    AUDIT_CUSTOM_AUDIT_COLUMN,
     "content_type",
     "title_name",
     "sku",
@@ -368,6 +384,7 @@ class InventoryAuditRow:
     roku: str
     frndly: str
     t_plus: str
+    custom_audit: str
     content_type: str
     title_name: str
     sku: str
@@ -1349,6 +1366,9 @@ class S3CopyApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.config = load_config()
+        self.custom_audit_requirements = self._normalize_custom_audit_requirements(
+            self.config.custom_audit_requirements
+        )
         self.use_session_only_credentials = False
         self.session_credentials: AwsCredentials | None = None
         self.keychain_credentials: AwsCredentials | None = None
@@ -1362,6 +1382,7 @@ class S3CopyApp:
         self._undo_manager = EntryUndoManager()
         self.simplified_bulk_dry_run_button: ttk.Button | None = None
         self.inventory_audit_button: ttk.Button | None = None
+        self.audit_requirements_button: ttk.Button | None = None
         self.inventory_exclusions_text: ScrolledText | None = None
         self.cancel_button: ttk.Button | None = None
 
@@ -2315,8 +2336,14 @@ class S3CopyApp:
         self.cancel_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
         self.inventory_audit_button = ttk.Button(action_row, text="Audit Inventory", command=self._on_inventory_audit_clicked)
         self.inventory_audit_button.grid(row=0, column=2, sticky="e", padx=(0, 8))
+        self.audit_requirements_button = ttk.Button(
+            action_row,
+            text="Audit Requirements",
+            command=self.open_audit_requirements,
+        )
+        self.audit_requirements_button.grid(row=0, column=3, sticky="e", padx=(0, 8))
         self.copy_button = ttk.Button(action_row, text="Copy", command=self.on_copy_clicked)
-        self.copy_button.grid(row=0, column=3, sticky="e")
+        self.copy_button.grid(row=0, column=4, sticky="e")
 
         preview_frame = tk.LabelFrame(
             main,
@@ -2503,6 +2530,171 @@ class S3CopyApp:
             BulkCopyDialog(self.root, "direct_upload", self._start_bulk_direct_upload)
         else:
             BulkCopyDialog(self.root, "s3_copy", self._start_bulk_copy)
+
+    @staticmethod
+    def _format_audit_requirement_fields(required_fields: tuple[str, ...]) -> str:
+        return ", ".join(required_fields) if required_fields else "N/A"
+
+    def _audit_requirement_rows(self) -> list[tuple[str, str, str]]:
+        rows: list[tuple[str, str, str]] = []
+        for content_type in AUDIT_CONTENT_TYPES:
+            for endpoint_name in AUDIT_ENDPOINT_ORDER:
+                requirement = AUDIT_ENDPOINT_REQUIREMENTS.get(endpoint_name, {}).get(content_type)
+                rows.append(
+                    (
+                        content_type,
+                        AUDIT_ENDPOINT_LABELS.get(endpoint_name, endpoint_name),
+                        self._format_audit_requirement_fields(self._audit_requirement_fields(requirement)),
+                    )
+                )
+            rows.append(
+                (
+                    content_type,
+                    "Custom Audit",
+                    self._format_audit_requirement_fields(self.custom_audit_requirements),
+                )
+            )
+        rows.append(("All", "Tracked Optional", ", ".join(AUDIT_OPTIONAL_TRACKED_FIELDS)))
+        return rows
+
+    def open_audit_requirements(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Audit Requirements")
+        dialog.geometry("760x520")
+        dialog.minsize(680, 420)
+        dialog.transient(self.root)
+
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        columns = ("content_type", "endpoint", "required_fields")
+        tree = ttk.Treeview(body, columns=columns, show="headings", height=16)
+        tree.heading("content_type", text="Type")
+        tree.heading("endpoint", text="Endpoint")
+        tree.heading("required_fields", text="Required Fields")
+        tree.column("content_type", width=100, anchor="w")
+        tree.column("endpoint", width=130, anchor="w")
+        tree.column("required_fields", width=470, anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        def refresh_tree() -> None:
+            tree.delete(*tree.get_children())
+            for row_values in self._audit_requirement_rows():
+                tree.insert("", "end", values=row_values)
+
+        button_row = ttk.Frame(body)
+        button_row.grid(row=1, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        ttk.Button(
+            button_row,
+            text="Add Custom Audit Requirements...",
+            command=lambda: self.open_custom_audit_requirements(parent=dialog, on_saved=refresh_tree),
+        ).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(
+            button_row,
+            text="Export XLSX...",
+            command=lambda: self._export_audit_requirements(parent=dialog),
+        ).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_row, text="Close", command=dialog.destroy).grid(row=0, column=2)
+
+        refresh_tree()
+
+    def _export_audit_requirements(self, parent: tk.Widget) -> None:
+        save_path = filedialog.asksaveasfilename(
+            parent=parent,
+            title="Export Audit Requirements",
+            defaultextension=".xlsx",
+            initialfile="audit_requirements.xlsx",
+            filetypes=(("Excel files", "*.xlsx"), ("All files", "*.*")),
+        )
+        if not save_path:
+            return
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font
+        except ImportError as error:
+            messagebox.showerror("Audit Requirements Export", "Excel export requires openpyxl.", parent=parent)
+            return
+
+        try:
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "Requirements"
+            worksheet.append(["content_type", "endpoint", "required_fields"])
+            for header_cell in worksheet[1]:
+                header_cell.font = Font(bold=True)
+            for row_values in self._audit_requirement_rows():
+                worksheet.append(list(row_values))
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+            for column_cells in worksheet.columns:
+                max_length = max(len(str(cell.value or "")) for cell in column_cells)
+                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 14), 60)
+            workbook.save(save_path)
+            messagebox.showinfo("Audit Requirements Exported", f"Requirements saved to:\n{save_path}", parent=parent)
+        except Exception as error:  # pylint: disable=broad-except
+            messagebox.showerror("Audit Requirements Export Failed", str(error), parent=parent)
+
+    def open_custom_audit_requirements(self, parent: tk.Widget | None = None, on_saved=None) -> None:
+        parent_window = parent or self.root
+        dialog = tk.Toplevel(parent_window)
+        dialog.title("Custom Audit Requirements")
+        dialog.geometry("520x360")
+        dialog.minsize(480, 320)
+        dialog.transient(parent_window)
+        dialog.grab_set()
+
+        body = ttk.Frame(dialog, padding=12)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        fields_frame = ttk.LabelFrame(body, text="Required Fields", padding=10)
+        fields_frame.grid(row=0, column=0, sticky="nsew")
+        for column_index in range(3):
+            fields_frame.columnconfigure(column_index, weight=1)
+
+        selected_vars: dict[str, tk.BooleanVar] = {}
+        for index, field_name in enumerate(AUDIT_CUSTOM_REQUIREMENT_FIELDS):
+            selected_vars[field_name] = tk.BooleanVar(value=field_name in self.custom_audit_requirements)
+            ttk.Checkbutton(
+                fields_frame,
+                text=field_name,
+                variable=selected_vars[field_name],
+            ).grid(row=index // 3, column=index % 3, sticky="w", padx=(0, 12), pady=4)
+
+        def clear_all() -> None:
+            for variable in selected_vars.values():
+                variable.set(False)
+
+        def save_selected() -> None:
+            selected_fields = tuple(
+                field_name
+                for field_name in AUDIT_CUSTOM_REQUIREMENT_FIELDS
+                if selected_vars[field_name].get()
+            )
+            self.custom_audit_requirements = selected_fields
+            self.config = replace(self.config, custom_audit_requirements=selected_fields)
+            save_config(replace(self.config, credential_mode="keychain"))
+            if selected_fields:
+                self._append_log(f"Custom audit requirements updated: {', '.join(selected_fields)}")
+            else:
+                self._append_log("Custom audit requirements cleared.")
+            if on_saved is not None:
+                on_saved()
+            dialog.destroy()
+
+        button_row = ttk.Frame(body)
+        button_row.grid(row=1, column=0, sticky="e", pady=(12, 0))
+        ttk.Button(button_row, text="Clear All", command=clear_all).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_row, text="Save", command=save_selected).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(button_row, text="Cancel", command=dialog.destroy).grid(row=0, column=2)
 
     def _browse_local_file(self) -> None:
         file_path = filedialog.askopenfilename(parent=self.root, title="Select Local Source File")
@@ -3247,6 +3439,81 @@ class S3CopyApp:
 
         return field_name, dimensions, S3CopyApp._dimension_area(dimensions)
 
+    @staticmethod
+    def _normalize_custom_audit_requirements(raw_fields) -> tuple[str, ...]:
+        selected_fields = {
+            str(field_name).strip().lower().replace(" ", "_")
+            for field_name in (raw_fields or ())
+            if str(field_name).strip()
+        }
+        return tuple(field_name for field_name in AUDIT_CUSTOM_REQUIREMENT_FIELDS if field_name in selected_fields)
+
+    @staticmethod
+    def _audit_requirement_fields(requirement: dict | None) -> tuple[str, ...]:
+        if not requirement:
+            return ()
+
+        required_fields: list[str] = []
+        if requirement.get("needs_mov"):
+            required_fields.append("mov")
+        if requirement.get("needs_srt"):
+            required_fields.append("srt")
+        if requirement.get("needs_vtt"):
+            required_fields.append("vtt")
+        for art_field in requirement.get("art", ()):
+            if art_field not in AUDIT_OPTIONAL_TRACKED_FIELDS:
+                required_fields.append(str(art_field))
+        return tuple(required_fields)
+
+    @staticmethod
+    def _audit_field_is_present(
+        field_name: str,
+        extension_values: dict[str, str],
+        art_values: dict[str, str],
+    ) -> bool:
+        if field_name == "mov":
+            return bool(extension_values.get("mov", ""))
+        if field_name in {"srt", "vtt"}:
+            return extension_values.get(field_name, "") == "present"
+        if field_name in AUDIT_ART_FIELD_ORDER:
+            return bool(art_values.get(field_name, ""))
+        return False
+
+    @classmethod
+    def _audit_status_for_fields(
+        cls,
+        required_fields: tuple[str, ...],
+        extension_values: dict[str, str],
+        art_values: dict[str, str],
+    ) -> str:
+        if not required_fields:
+            return "N/A"
+
+        for field_name in required_fields:
+            if not cls._audit_field_is_present(field_name, extension_values, art_values):
+                return "incomplete"
+        return "complete"
+
+    @classmethod
+    def _audit_status_for_requirement(
+        cls,
+        requirement: dict | None,
+        extension_values: dict[str, str],
+        art_values: dict[str, str],
+    ) -> str:
+        return cls._audit_status_for_fields(
+            cls._audit_requirement_fields(requirement),
+            extension_values,
+            art_values,
+        )
+
+    def _custom_audit_status(
+        self,
+        extension_values: dict[str, str],
+        art_values: dict[str, str],
+    ) -> str:
+        return self._audit_status_for_fields(self.custom_audit_requirements, extension_values, art_values)
+
     def _build_inventory_audit_groups(self, listed_objects: list[S3ListedObject]) -> list[InventoryAuditGroup]:
         groups: dict[tuple[str, str], InventoryAuditGroup] = {}
 
@@ -3364,20 +3631,13 @@ class S3CopyApp:
             for endpoint_name in AUDIT_ENDPOINT_ORDER:
                 endpoint_requirement = AUDIT_ENDPOINT_REQUIREMENTS.get(endpoint_name, {}).get(
                     group.content_type,
-                    {"art": (), "needs_mov": False, "needs_srt": False, "needs_vtt": False},
+                    None,
                 )
-                is_complete = True
-                if endpoint_requirement.get("needs_mov") and not extension_values["mov"]:
-                    is_complete = False
-                if endpoint_requirement.get("needs_srt") and extension_values["srt"] != "present":
-                    is_complete = False
-                if endpoint_requirement.get("needs_vtt") and extension_values["vtt"] != "present":
-                    is_complete = False
-                for required_art_field in endpoint_requirement.get("art", ()):
-                    if not art_values.get(required_art_field, ""):
-                        is_complete = False
-                        break
-                endpoint_values[endpoint_name] = "complete" if is_complete else "incomplete"
+                endpoint_values[endpoint_name] = self._audit_status_for_requirement(
+                    endpoint_requirement,
+                    extension_values,
+                    art_values,
+                )
 
             audit_rows.append(
                 InventoryAuditRow(
@@ -3387,6 +3647,7 @@ class S3CopyApp:
                     roku=endpoint_values["roku"],
                     frndly=endpoint_values["frndly"],
                     t_plus=endpoint_values["t_plus"],
+                    custom_audit=self._custom_audit_status(extension_values, art_values),
                     content_type=group.content_type,
                     title_name=group.title_name,
                     sku=group.sku,
@@ -3410,6 +3671,12 @@ class S3CopyApp:
 
         return audit_rows
 
+    @staticmethod
+    def _audit_report_value(row_dict: dict, column_name: str) -> str:
+        if column_name == AUDIT_CUSTOM_AUDIT_COLUMN:
+            return str(row_dict.get("custom_audit", ""))
+        return str(row_dict.get(column_name, ""))
+
     def _write_inventory_audit_reports(self, audit_rows: list[InventoryAuditRow]) -> tuple[Path, Path]:
         csv_report_path, xlsx_report_path = self._inventory_audit_report_paths()
         csv_report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3419,7 +3686,12 @@ class S3CopyApp:
             writer = csv.DictWriter(file_handle, fieldnames=list(AUDIT_REPORT_COLUMNS))
             writer.writeheader()
             for row_dict in row_dicts:
-                writer.writerow({column_name: row_dict.get(column_name, "") for column_name in AUDIT_REPORT_COLUMNS})
+                writer.writerow(
+                    {
+                        column_name: self._audit_report_value(row_dict, column_name)
+                        for column_name in AUDIT_REPORT_COLUMNS
+                    }
+                )
 
         try:
             from openpyxl import Workbook
@@ -3435,7 +3707,7 @@ class S3CopyApp:
             header_cell.font = Font(bold=True)
 
         for row_dict in row_dicts:
-            worksheet.append([row_dict.get(column_name, "") for column_name in AUDIT_REPORT_COLUMNS])
+            worksheet.append([self._audit_report_value(row_dict, column_name) for column_name in AUDIT_REPORT_COLUMNS])
 
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
@@ -4857,6 +5129,12 @@ class S3CopyApp:
                 self.inventory_audit_button.configure(state="disabled" if self._running else "normal")
             else:
                 self.inventory_audit_button.grid_remove()
+        if self.audit_requirements_button is not None:
+            if is_inventory_mode:
+                self.audit_requirements_button.grid()
+                self.audit_requirements_button.configure(state="disabled" if self._running else "normal")
+            else:
+                self.audit_requirements_button.grid_remove()
 
         if (
             is_rename_mode
@@ -5044,6 +5322,8 @@ class S3CopyApp:
                 self.simplified_bulk_dry_run_button.configure(state="disabled")
             if self.inventory_audit_button is not None:
                 self.inventory_audit_button.configure(state="disabled")
+            if self.audit_requirements_button is not None:
+                self.audit_requirements_button.configure(state="disabled")
         else:
             self.copy_button.configure(state="normal")
             if (
@@ -5064,6 +5344,8 @@ class S3CopyApp:
                 self.simplified_bulk_dry_run_button.configure(state="normal")
             if self.inventory_audit_button is not None and self._is_inventory_mode():
                 self.inventory_audit_button.configure(state="normal")
+            if self.audit_requirements_button is not None and self._is_inventory_mode():
+                self.audit_requirements_button.configure(state="normal")
 
     def _append_log(self, message: str) -> None:
         if self._closing:

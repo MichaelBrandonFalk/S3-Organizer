@@ -34,6 +34,7 @@ class AppConfig:
     dest_prefix: str = ""
     aws_region: str = ""
     credential_mode: str = "keychain"
+    custom_audit_requirements: tuple[str, ...] = ()
 
 
 DEFAULT_CONFIG = AppConfig()
@@ -50,6 +51,11 @@ def load_config() -> AppConfig:
     credential_mode = str(data.get("credential_mode", DEFAULT_CONFIG.credential_mode)).strip().lower()
     if credential_mode not in {"keychain", "session"}:
         credential_mode = DEFAULT_CONFIG.credential_mode
+    raw_custom_requirements = data.get("custom_audit_requirements", DEFAULT_CONFIG.custom_audit_requirements)
+    if isinstance(raw_custom_requirements, list):
+        custom_audit_requirements = tuple(str(item).strip() for item in raw_custom_requirements if str(item).strip())
+    else:
+        custom_audit_requirements = DEFAULT_CONFIG.custom_audit_requirements
 
     return AppConfig(
         source_bucket=str(data.get("source_bucket", DEFAULT_CONFIG.source_bucket)).strip(),
@@ -58,6 +64,7 @@ def load_config() -> AppConfig:
         dest_prefix=str(data.get("dest_prefix", DEFAULT_CONFIG.dest_prefix)).strip(),
         aws_region=str(data.get("aws_region", "")).strip(),
         credential_mode=credential_mode,
+        custom_audit_requirements=custom_audit_requirements,
     )
 
 
