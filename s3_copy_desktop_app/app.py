@@ -426,6 +426,10 @@ class SimplifiedBulkInterrupted(RuntimeError):
     """Raised when a simplified bulk job is cooperatively paused or cancelled."""
 
 
+class BulkFolderCopyInterrupted(RuntimeError):
+    """Raised when a bulk folder copy job is cooperatively paused or stopped."""
+
+
 class SettingsDialog(tk.Toplevel):
     """Hidden settings for fixed S3 routing and optional keychain credentials."""
 
@@ -2922,6 +2926,173 @@ class S3CopyApp:
         self._save_simplified_bulk_checkpoint(checkpoint)
         return checkpoint
 
+    @staticmethod
+    def _bulk_folder_checkpoint_path(csv_path: str) -> Path:
+        normalized_path = str(Path(csv_path).expanduser().resolve())
+        session_id = hashlib.sha256(f"bulk_folder:{normalized_path}".encode("utf-8")).hexdigest()[:16]
+        return SIMPLIFIED_BULK_CHECKPOINT_DIR / f"bulk_folder_{session_id}.json"
+
+    def _load_bulk_folder_checkpoint(self, csv_path: str) -> dict | None:
+        checkpoint_path = self._bulk_folder_checkpoint_path(csv_path)
+        if not checkpoint_path.exists():
+            return None
+
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as file_handle:
+                checkpoint = json.load(file_handle)
+        except Exception as error:  # pylint: disable=broad-except
+            self._append_log(f"Could not read bulk folder copy checkpoint: {error}")
+            return None
+
+        try:
+            signature = self._simplified_bulk_csv_signature(csv_path)
+        except OSError:
+            return None
+
+        if (
+            checkpoint.get("kind") != "bulk_folder_copy"
+            or checkpoint.get("csv_path") != signature["csv_path"]
+            or int(checkpoint.get("csv_size", -1)) != signature["csv_size"]
+            or int(checkpoint.get("csv_mtime_ns", -1)) != signature["csv_mtime_ns"]
+        ):
+            return None
+        return checkpoint
+
+    def _save_bulk_folder_checkpoint(self, checkpoint: dict) -> None:
+        checkpoint_path = self._bulk_folder_checkpoint_path(str(checkpoint["csv_path"]))
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = checkpoint_path.with_suffix(".tmp")
+        with open(temp_path, "w", encoding="utf-8") as file_handle:
+            json.dump(checkpoint, file_handle, indent=2)
+        os.replace(temp_path, checkpoint_path)
+
+    def _delete_bulk_folder_checkpoint(self, csv_path: str) -> None:
+        checkpoint_path = self._bulk_folder_checkpoint_path(csv_path)
+        if checkpoint_path.exists():
+            checkpoint_path.unlink()
+
+    @staticmethod
+    def _bulk_folder_phase_label(phase: str) -> str:
+        if phase == "scan":
+            return "Folder scan"
+        if phase == "copy":
+            return "Main copy"
+        if phase == "copy_overwrite_review":
+            return "Overwrite review"
+        if phase == "copy_overwrite":
+            return "Overwrite pass"
+        return phase.replace("_", " ").title()
+
+    def _format_bulk_folder_resume_summary(self, checkpoint: dict) -> str:
+        phase = str(checkpoint.get("phase", "scan"))
+        phase_label = self._bulk_folder_phase_label(phase)
+        paused_text = " Paused." if checkpoint.get("paused") else ""
+        stopped_text = " Stopped." if checkpoint.get("cancelled") else ""
+
+        if phase == "scan":
+            scanned_count = int(checkpoint.get("folder_next_index", 0))
+            total_folder_pairs = int(checkpoint.get("total_folder_pairs", 0))
+            total_items = int(checkpoint.get("total_items", 0))
+            return (
+                f"Resume available: {phase_label} {scanned_count}/{total_folder_pairs} folder pair(s) scanned."
+                f" {total_items} object(s) queued so far.{paused_text}{stopped_text}"
+            )
+
+        next_index = int(checkpoint.get("next_index", 0))
+        total_items = int(checkpoint.get("total_items", 0))
+        copy_rows = checkpoint.get("copy_rows", [])
+        success_count = sum(1 for row in copy_rows if str(row.get("status", "")) == "success")
+        pending_count = sum(1 for row in copy_rows if str(row.get("status", "")) == "overwrite_pending")
+        skipped_count = sum(1 for row in copy_rows if str(row.get("status", "")) == "skipped_overwrite")
+        failure_count = sum(1 for row in copy_rows if str(row.get("status", "")) == "failed")
+        return (
+            f"Resume available: {phase_label} {next_index}/{total_items} object(s) processed."
+            f" Successes {success_count}, overwrite review {pending_count}, skipped {skipped_count},"
+            f" failures {failure_count}.{paused_text}{stopped_text}"
+        )
+
+    def _build_new_bulk_folder_checkpoint(self, csv_path: str, folder_jobs: list[tuple[str, str]]) -> dict:
+        signature = self._simplified_bulk_csv_signature(csv_path)
+        checkpoint = {
+            "kind": "bulk_folder_copy",
+            "version": 1,
+            "csv_path": signature["csv_path"],
+            "csv_size": signature["csv_size"],
+            "csv_mtime_ns": signature["csv_mtime_ns"],
+            "phase": "scan",
+            "total_folder_pairs": len(folder_jobs),
+            "folder_next_index": 0,
+            "total_items": 0,
+            "next_index": 0,
+            "overwrite_next_index": 0,
+            "paused": False,
+            "cancelled": False,
+            "first_source_uri": "",
+            "first_destination_uri": "",
+            "copy_report_path": str(self._simplified_bulk_report_path("bulk_folder_copy_result")),
+            "folder_jobs": [
+                {
+                    "source_folder_uri": source_folder_uri,
+                    "destination_folder_uri": destination_folder_uri,
+                }
+                for source_folder_uri, destination_folder_uri in folder_jobs
+            ],
+            "copy_items": [],
+            "copy_rows": [],
+        }
+        self._save_bulk_folder_checkpoint(checkpoint)
+        return checkpoint
+
+    def _sync_bulk_folder_report(self, checkpoint: dict) -> Path:
+        report_path_value = checkpoint.get("copy_report_path", "")
+        report_path = Path(report_path_value) if report_path_value else self._simplified_bulk_report_path("bulk_folder_copy_result")
+        checkpoint["copy_report_path"] = str(report_path)
+        report_rows = self._report_rows_from_checkpoint(checkpoint.get("copy_rows", []))
+        self._write_simplified_bulk_report(report_rows, "bulk_folder_copy_result", report_path=report_path)
+        return report_path
+
+    @staticmethod
+    def _bulk_folder_checkpoint_item(label: str, paths: ResolvedS3Paths) -> dict[str, str]:
+        return {
+            "label": label,
+            "source_uri": paths.source_uri,
+            "destination_uri": paths.dest_uri,
+        }
+
+    def _bulk_folder_copy_items_from_checkpoint(
+        self,
+        raw_items: list[dict],
+    ) -> list[tuple[str, ResolvedS3Paths]]:
+        copy_items: list[tuple[str, ResolvedS3Paths]] = []
+        for raw_item in raw_items:
+            label = str(raw_item.get("label", "")).strip() or f"Folder item {len(copy_items) + 1}"
+            source_uri = str(raw_item.get("source_uri", "")).strip()
+            destination_uri = str(raw_item.get("destination_uri", raw_item.get("dest_uri", ""))).strip()
+            source_bucket, source_key = self._parse_s3_uri(source_uri)
+            dest_bucket, dest_key = self._parse_s3_uri(destination_uri)
+            copy_items.append(
+                (
+                    label,
+                    ResolvedS3Paths(
+                        source_bucket=source_bucket,
+                        source_key=source_key,
+                        dest_bucket=dest_bucket,
+                        dest_key=dest_key,
+                    ),
+                )
+            )
+        return copy_items
+
+    @staticmethod
+    def _bulk_folder_jobs_from_checkpoint(checkpoint: dict) -> list[tuple[str, str]]:
+        folder_jobs: list[tuple[str, str]] = []
+        for raw_job in checkpoint.get("folder_jobs", []):
+            source_folder_uri = str(raw_job.get("source_folder_uri", "")).strip()
+            destination_folder_uri = str(raw_job.get("destination_folder_uri", "")).strip()
+            if source_folder_uri and destination_folder_uri:
+                folder_jobs.append((source_folder_uri, destination_folder_uri))
+        return folder_jobs
+
     def _build_simplified_bulk_copy_plan(
         self,
         copy_items: list[tuple[str, ResolvedS3Paths]],
@@ -3063,6 +3234,34 @@ class S3CopyApp:
             return "restart"
         return "cancel"
 
+    def _prompt_bulk_folder_resume_action(self, checkpoint: dict) -> str:
+        phase_label = self._bulk_folder_phase_label(str(checkpoint.get("phase", "scan")))
+        if checkpoint.get("phase") == "scan":
+            progress_label = "Folder pairs scanned"
+            progress_value = (
+                f"{int(checkpoint.get('folder_next_index', 0))}/"
+                f"{int(checkpoint.get('total_folder_pairs', 0))}"
+            )
+        else:
+            progress_label = "Objects processed"
+            progress_value = f"{int(checkpoint.get('next_index', 0))}/{int(checkpoint.get('total_items', 0))}"
+
+        message = (
+            "A previous Bulk Folder Copy session was found for this CSV.\n\n"
+            f"Phase: {phase_label}\n"
+            f"{progress_label}: {progress_value}\n"
+            f"Queued objects: {int(checkpoint.get('total_items', 0))}\n\n"
+            "Yes = Resume\n"
+            "No = Restart from the beginning\n"
+            "Cancel = Stop"
+        )
+        response = messagebox.askyesnocancel("Resume Bulk Folder Copy", message, parent=self.root)
+        if response is True:
+            return "resume"
+        if response is False:
+            return "restart"
+        return "cancel"
+
     def _set_pause_state(self, requested: bool, active: bool | None = None) -> None:
         self._pause_requested = requested
         if active is not None:
@@ -3074,7 +3273,11 @@ class S3CopyApp:
         self._update_pause_button_state()
 
     def _update_pause_button_state(self) -> None:
-        if self._running and self._is_simplified_bulk_mode():
+        is_simplified_bulk_mode = self._is_simplified_bulk_mode()
+        is_bulk_folder_copy_mode = self._is_bulk_folder_copy_mode()
+        if self._running and (is_simplified_bulk_mode or is_bulk_folder_copy_mode):
+            stop_text = "Stop" if is_bulk_folder_copy_mode else "Cancel"
+            stopping_text = "Stopping..." if is_bulk_folder_copy_mode else "Canceling..."
             self.pause_button.configure(
                 state="normal",
                 text="Resume" if (self._pause_requested or self._pause_active) else "Pause",
@@ -3082,33 +3285,44 @@ class S3CopyApp:
             if self.cancel_button is not None:
                 self.cancel_button.configure(
                     state="disabled" if self._cancel_requested else "normal",
-                    text="Canceling..." if self._cancel_requested else "Cancel",
+                    text=stopping_text if self._cancel_requested else stop_text,
                 )
         else:
             self.pause_button.configure(state="disabled", text="Pause")
             if self.cancel_button is not None:
-                self.cancel_button.configure(state="disabled", text="Cancel")
+                self.cancel_button.configure(
+                    state="disabled",
+                    text="Stop" if is_bulk_folder_copy_mode else "Cancel",
+                )
 
     def _on_pause_resume_clicked(self) -> None:
-        if not self._running or not self._is_simplified_bulk_mode():
+        is_simplified_bulk_mode = self._is_simplified_bulk_mode()
+        is_bulk_folder_copy_mode = self._is_bulk_folder_copy_mode()
+        if not self._running or not (is_simplified_bulk_mode or is_bulk_folder_copy_mode):
             return
 
+        operation_label = "Bulk Folder Copy" if is_bulk_folder_copy_mode else "Simplified Bulk Copy"
         if self._pause_requested or self._pause_active:
             self._set_pause_state(False, active=False)
-            self._append_log("Resume requested for Simplified Bulk Copy.")
+            self._append_log(f"Resume requested for {operation_label}.")
             return
 
         self._set_pause_state(True)
-        self._append_log("Pause requested. The current row will finish before the session pauses.")
+        self._append_log(f"Pause requested for {operation_label}. The current item will finish before the session pauses.")
 
     def _on_cancel_clicked(self) -> None:
-        if not self._running or not self._is_simplified_bulk_mode() or self._cancel_requested:
+        is_simplified_bulk_mode = self._is_simplified_bulk_mode()
+        is_bulk_folder_copy_mode = self._is_bulk_folder_copy_mode()
+        if not self._running or not (is_simplified_bulk_mode or is_bulk_folder_copy_mode) or self._cancel_requested:
             return
 
         self._set_cancel_state(True)
         if self._pause_requested or self._pause_active:
             self._set_pause_state(False, active=False)
-        self._append_log("Cancel requested. The current row will finish before the session stops and writes a progress report.")
+        action_label = "Stop" if is_bulk_folder_copy_mode else "Cancel"
+        self._append_log(
+            f"{action_label} requested. The current item will finish before the session stops and writes a progress report."
+        )
 
     @staticmethod
     def _simplified_bulk_report_kind_for_phase(phase: str) -> str:
@@ -3155,6 +3369,55 @@ class S3CopyApp:
 
         checkpoint["paused"] = False
         self._save_simplified_bulk_checkpoint(checkpoint)
+        self._enqueue_ui(self._set_pause_state, False, False)
+        self._enqueue_ui(self._append_log, f"{phase_label} resumed.")
+
+    def _cancel_bulk_folder_if_requested(self, checkpoint: dict, phase_label: str) -> None:
+        if not self._cancel_requested:
+            return
+
+        checkpoint["paused"] = False
+        checkpoint["cancelled"] = True
+        self._save_bulk_folder_checkpoint(checkpoint)
+        report_path = self._sync_bulk_folder_report(checkpoint)
+        self._enqueue_ui(
+            self._append_log,
+            f"{phase_label} stopped. Progress report written to {report_path}",
+        )
+        self._enqueue_ui(self._update_bulk_folder_summary)
+        raise BulkFolderCopyInterrupted(str(report_path))
+
+    def _wait_if_bulk_folder_paused(self, checkpoint: dict, phase_label: str) -> None:
+        if not self._pause_requested:
+            return
+
+        if not checkpoint.get("paused"):
+            checkpoint["paused"] = True
+            checkpoint["cancelled"] = False
+            self._save_bulk_folder_checkpoint(checkpoint)
+            report_path = self._sync_bulk_folder_report(checkpoint)
+            self._enqueue_ui(
+                self._append_log,
+                f"{phase_label} paused. Progress report written to {report_path}. Click Resume to continue.",
+            )
+            self._enqueue_ui(self._update_bulk_folder_summary)
+
+        self._enqueue_ui(self._set_pause_state, True, True)
+        while self._pause_requested and not self._closing:
+            if self._cancel_requested:
+                checkpoint["paused"] = False
+                self._save_bulk_folder_checkpoint(checkpoint)
+                self._enqueue_ui(self._set_pause_state, False, False)
+                self._cancel_bulk_folder_if_requested(checkpoint, phase_label)
+            time.sleep(0.2)
+
+        if self._closing:
+            checkpoint["paused"] = True
+            self._save_bulk_folder_checkpoint(checkpoint)
+            raise BulkFolderCopyInterrupted(str(self._sync_bulk_folder_report(checkpoint)))
+
+        checkpoint["paused"] = False
+        self._save_bulk_folder_checkpoint(checkpoint)
         self._enqueue_ui(self._set_pause_state, False, False)
         self._enqueue_ui(self._append_log, f"{phase_label} resumed.")
 
@@ -4086,6 +4349,77 @@ class S3CopyApp:
             folder_pair_count=len(folder_jobs),
         )
 
+    def _scan_bulk_folder_copy_checkpoint(
+        self,
+        s3_client,
+        checkpoint: dict,
+    ) -> tuple[list[tuple[str, ResolvedS3Paths]], FolderCopyPreview]:
+        folder_jobs = self._bulk_folder_jobs_from_checkpoint(checkpoint)
+        if not folder_jobs:
+            raise UserVisibleError("No valid folder pairs were found in the saved Bulk Folder Copy checkpoint.")
+
+        copy_items = self._bulk_folder_copy_items_from_checkpoint(checkpoint.get("copy_items", []))
+        first_source_uri = str(checkpoint.get("first_source_uri", "")).strip()
+        first_destination_uri = str(checkpoint.get("first_destination_uri", "")).strip()
+        start_index = min(int(checkpoint.get("folder_next_index", 0)), len(folder_jobs))
+
+        checkpoint["phase"] = "scan"
+        checkpoint["total_folder_pairs"] = len(folder_jobs)
+        checkpoint["total_items"] = len(copy_items)
+        checkpoint["cancelled"] = False
+        self._save_bulk_folder_checkpoint(checkpoint)
+
+        for job_offset in range(start_index, len(folder_jobs)):
+            self._cancel_bulk_folder_if_requested(checkpoint, "Folder scan")
+            self._wait_if_bulk_folder_paused(checkpoint, "Folder scan")
+            self._cancel_bulk_folder_if_requested(checkpoint, "Folder scan")
+
+            source_folder_uri, destination_folder_uri = folder_jobs[job_offset]
+            job_number = job_offset + 1
+            self._enqueue_ui(
+                self._append_log,
+                f"Scanning folder pair {job_number}/{len(folder_jobs)}: {source_folder_uri} -> {destination_folder_uri}",
+            )
+            job_items, preview = self._build_folder_copy_items(
+                s3_client,
+                source_folder_uri,
+                destination_folder_uri,
+            )
+            for item_index, (_old_label, item_paths) in enumerate(job_items, start=1):
+                item_label = f"Folder {job_number} item {item_index}"
+                copy_items.append((item_label, item_paths))
+                checkpoint.setdefault("copy_items", []).append(
+                    self._bulk_folder_checkpoint_item(item_label, item_paths)
+                )
+
+            if not first_source_uri:
+                first_source_uri = preview.first_source_uri
+                first_destination_uri = preview.first_destination_uri
+
+            checkpoint["folder_next_index"] = job_number
+            checkpoint["total_items"] = len(copy_items)
+            checkpoint["first_source_uri"] = first_source_uri
+            checkpoint["first_destination_uri"] = first_destination_uri
+            checkpoint["paused"] = False
+            checkpoint["cancelled"] = False
+            self._save_bulk_folder_checkpoint(checkpoint)
+
+        if not copy_items:
+            raise UserVisibleError("No file objects were found under the provided folder pairs.")
+
+        checkpoint["phase"] = "copy"
+        checkpoint["next_index"] = min(int(checkpoint.get("next_index", 0)), len(copy_items))
+        checkpoint["paused"] = False
+        checkpoint["cancelled"] = False
+        self._save_bulk_folder_checkpoint(checkpoint)
+
+        return copy_items, FolderCopyPreview(
+            object_count=len(copy_items),
+            first_source_uri=first_source_uri,
+            first_destination_uri=first_destination_uri,
+            folder_pair_count=len(folder_jobs),
+        )
+
     def _prepare_copy_items(
         self,
         user_input: UserInput,
@@ -4454,6 +4788,11 @@ class S3CopyApp:
         errors, folder_jobs, _preview = self._load_bulk_folder_copy_jobs(csv_path)
         if errors:
             self.bulk_folder_summary_var.set(errors[0])
+            return
+
+        checkpoint = self._load_bulk_folder_checkpoint(csv_path)
+        if checkpoint:
+            self.bulk_folder_summary_var.set(self._format_bulk_folder_resume_summary(checkpoint))
             return
 
         self.bulk_folder_summary_var.set(
@@ -5838,24 +6177,47 @@ class S3CopyApp:
             self._append_log("Validation failed: no valid folder pairs were found in the CSV file.")
             return
 
-        confirm_message = (
-            "Bulk folder copy will scan each source folder and copy every object it finds.\n\n"
-            f"CSV File: {Path(csv_path).name}\n"
-            f"Folder pairs: {preview.folder_pair_count}\n"
-            f"First Source Folder: {preview.first_source_uri}\n"
-            f"First Destination Folder: {preview.first_destination_uri}\n\n"
-            "Relative paths under each source folder will be preserved.\n"
-            "Destination overwrite candidates will be reviewed once at the end.\n\n"
-            "Continue?"
-        )
-        if not messagebox.askokcancel("Confirm Bulk Folder Copy", confirm_message, parent=self.root):
-            self._append_log("Bulk folder copy cancelled before execution.")
-            return
+        checkpoint = self._load_bulk_folder_checkpoint(csv_path)
+        resume_existing = False
+        if checkpoint:
+            resume_action = self._prompt_bulk_folder_resume_action(checkpoint)
+            if resume_action == "cancel":
+                self._append_log("Bulk folder copy stopped before session resume.")
+                return
+            if resume_action == "resume":
+                resume_existing = True
+                checkpoint["paused"] = False
+                checkpoint["cancelled"] = False
+                self._save_bulk_folder_checkpoint(checkpoint)
+                self._append_log(
+                    f"Resuming Bulk Folder Copy from {self._bulk_folder_phase_label(str(checkpoint.get('phase', 'scan'))).lower()}."
+                )
+            else:
+                checkpoint = None
 
+        if not resume_existing:
+            confirm_message = (
+                "Bulk folder copy will scan each source folder and copy every object it finds.\n\n"
+                f"CSV File: {Path(csv_path).name}\n"
+                f"Folder pairs: {preview.folder_pair_count}\n"
+                f"First Source Folder: {preview.first_source_uri}\n"
+                f"First Destination Folder: {preview.first_destination_uri}\n\n"
+                "Relative paths under each source folder will be preserved.\n"
+                "Destination overwrite candidates will be reviewed once at the end.\n\n"
+                "Continue?"
+            )
+            if not messagebox.askokcancel("Confirm Bulk Folder Copy", confirm_message, parent=self.root):
+                self._append_log("Bulk folder copy cancelled before execution.")
+                return
+            self._delete_bulk_folder_checkpoint(csv_path)
+            checkpoint = self._build_new_bulk_folder_checkpoint(csv_path, folder_jobs)
+
+        self._set_pause_state(False, active=False)
+        self._set_cancel_state(False)
         self._set_running(True)
         threading.Thread(
             target=self._bulk_folder_copy_worker,
-            args=(folder_jobs,),
+            args=(checkpoint,),
             daemon=True,
         ).start()
 
@@ -6406,58 +6768,103 @@ class S3CopyApp:
         copy_items: list[tuple[str, ResolvedS3Paths]],
         report_kind: str,
         operation_label: str,
+        checkpoint: dict | None = None,
     ) -> None:
-        report_rows: list[SimplifiedBulkCopyReportRow] = []
-        report_path = self._simplified_bulk_report_path(report_kind)
+        if checkpoint is None:
+            report_rows: list[SimplifiedBulkCopyReportRow] = []
+            report_path = self._simplified_bulk_report_path(report_kind)
+        else:
+            checkpoint["total_items"] = len(copy_items)
+            report_rows = self._report_rows_from_checkpoint(checkpoint.get("copy_rows", []))
+            report_path = self._sync_bulk_folder_report(checkpoint)
 
-        pending_entries: list[tuple[int, str, ResolvedS3Paths]] = []
-        for row_index, (item_label, item_paths) in enumerate(copy_items):
-            try:
-                self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="collect_overwrites")
-                row = SimplifiedBulkCopyReportRow(
-                    row_label=item_label,
-                    source_uri=item_paths.source_uri,
-                    destination_uri=item_paths.dest_uri,
-                    status="success",
-                    message="Copied successfully.",
+        if checkpoint is None or str(checkpoint.get("phase", "copy")) != "copy_overwrite":
+            start_index = 0
+            if checkpoint is not None:
+                checkpoint["phase"] = "copy"
+                start_index = min(
+                    int(checkpoint.get("next_index", len(report_rows))),
+                    len(report_rows),
+                    len(copy_items),
                 )
-            except DeferredOverwriteError as error:
-                self._enqueue_ui(self._append_log, f"{item_label} queued for end-of-run overwrite review.")
-                row = SimplifiedBulkCopyReportRow(
-                    row_label=item_label,
-                    source_uri=item_paths.source_uri,
-                    destination_uri=item_paths.dest_uri,
-                    status="overwrite_pending",
-                    message=str(error),
-                )
-                pending_entries.append((row_index, item_label, item_paths))
-            except (UserVisibleError, RuntimeError) as error:
-                self._enqueue_ui(self._append_log, f"{item_label} failed: {error}")
-                row = SimplifiedBulkCopyReportRow(
-                    row_label=item_label,
-                    source_uri=item_paths.source_uri,
-                    destination_uri=item_paths.dest_uri,
-                    status="failed",
-                    message=str(error),
-                )
-            except Exception as error:  # pylint: disable=broad-except
-                self._enqueue_ui(self._append_log, f"{item_label} unexpected failure: {error}")
-                row = SimplifiedBulkCopyReportRow(
-                    row_label=item_label,
-                    source_uri=item_paths.source_uri,
-                    destination_uri=item_paths.dest_uri,
-                    status="failed",
-                    message=f"Unexpected error: {error}",
-                )
+                if len(report_rows) > start_index:
+                    report_rows = report_rows[:start_index]
+                    checkpoint["copy_rows"] = [asdict(row) for row in report_rows]
+                checkpoint["next_index"] = start_index
+                checkpoint["cancelled"] = False
+                self._save_bulk_folder_checkpoint(checkpoint)
 
-            report_rows.append(row)
-            report_path = self._write_simplified_bulk_report(report_rows, report_kind, report_path=report_path)
+            for row_index in range(start_index, len(copy_items)):
+                if checkpoint is not None:
+                    self._cancel_bulk_folder_if_requested(checkpoint, "Bulk folder copy")
+                    self._wait_if_bulk_folder_paused(checkpoint, "Bulk folder copy")
+                    self._cancel_bulk_folder_if_requested(checkpoint, "Bulk folder copy")
+
+                item_label, item_paths = copy_items[row_index]
+                try:
+                    self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="collect_overwrites")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="success",
+                        message="Copied successfully.",
+                    )
+                except DeferredOverwriteError as error:
+                    self._enqueue_ui(self._append_log, f"{item_label} queued for end-of-run overwrite review.")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="overwrite_pending",
+                        message=str(error),
+                    )
+                except (UserVisibleError, RuntimeError) as error:
+                    self._enqueue_ui(self._append_log, f"{item_label} failed: {error}")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=str(error),
+                    )
+                except Exception as error:  # pylint: disable=broad-except
+                    self._enqueue_ui(self._append_log, f"{item_label} unexpected failure: {error}")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=f"Unexpected error: {error}",
+                    )
+
+                report_rows.append(row)
+                if checkpoint is None:
+                    report_path = self._write_simplified_bulk_report(report_rows, report_kind, report_path=report_path)
+                else:
+                    checkpoint.setdefault("copy_rows", []).append(asdict(row))
+                    checkpoint["next_index"] = row_index + 1
+                    checkpoint["paused"] = False
+                    checkpoint["cancelled"] = False
+                    self._save_bulk_folder_checkpoint(checkpoint)
+                    report_path = self._sync_bulk_folder_report(checkpoint)
 
         success_count = sum(1 for row in report_rows if row.status == "success")
-        pending_count = sum(1 for row in report_rows if row.status == "overwrite_pending")
+        pending_entries = [
+            (row_index, item_label, item_paths)
+            for row_index, (item_label, item_paths) in enumerate(copy_items)
+            if row_index < len(report_rows) and report_rows[row_index].status == "overwrite_pending"
+        ]
+        pending_count = len(pending_entries)
         failure_count = sum(1 for row in report_rows if row.status == "failed")
 
-        if pending_count:
+        if pending_count and (checkpoint is None or str(checkpoint.get("phase", "copy")) != "copy_overwrite"):
+            if checkpoint is not None:
+                checkpoint["phase"] = "copy_overwrite_review"
+                checkpoint["overwrite_next_index"] = int(checkpoint.get("overwrite_next_index", 0))
+                self._save_bulk_folder_checkpoint(checkpoint)
+                report_path = self._sync_bulk_folder_report(checkpoint)
+
             action = self._call_on_ui_thread(
                 self._prompt_folder_copy_overwrite_action,
                 report_path,
@@ -6467,39 +6874,15 @@ class S3CopyApp:
             )
 
             if action == "overwrite_all_pending":
-                for row_index, item_label, item_paths in pending_entries:
-                    try:
-                        self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="overwrite_all")
-                        report_rows[row_index] = SimplifiedBulkCopyReportRow(
-                            row_label=item_label,
-                            source_uri=item_paths.source_uri,
-                            destination_uri=item_paths.dest_uri,
-                            status="success",
-                            message="Copied successfully after overwrite approval.",
-                        )
-                    except (UserVisibleError, RuntimeError) as error:
-                        self._enqueue_ui(self._append_log, f"{item_label} overwrite failed: {error}")
-                        report_rows[row_index] = SimplifiedBulkCopyReportRow(
-                            row_label=item_label,
-                            source_uri=item_paths.source_uri,
-                            destination_uri=item_paths.dest_uri,
-                            status="failed",
-                            message=str(error),
-                        )
-                    except Exception as error:  # pylint: disable=broad-except
-                        self._enqueue_ui(self._append_log, f"{item_label} overwrite unexpected failure: {error}")
-                        report_rows[row_index] = SimplifiedBulkCopyReportRow(
-                            row_label=item_label,
-                            source_uri=item_paths.source_uri,
-                            destination_uri=item_paths.dest_uri,
-                            status="failed",
-                            message=f"Unexpected error: {error}",
-                        )
-                    report_path = self._write_simplified_bulk_report(
-                        report_rows,
-                        report_kind,
-                        report_path=report_path,
-                    )
+                if checkpoint is not None:
+                    checkpoint["phase"] = "copy_overwrite"
+                    checkpoint["overwrite_next_index"] = 0
+                    checkpoint["cancelled"] = False
+                    self._save_bulk_folder_checkpoint(checkpoint)
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Starting overwrite pass for {pending_count} queued object(s).",
+                )
             else:
                 for row_index, item_label, item_paths in pending_entries:
                     report_rows[row_index] = SimplifiedBulkCopyReportRow(
@@ -6508,6 +6891,88 @@ class S3CopyApp:
                         destination_uri=item_paths.dest_uri,
                         status="skipped_overwrite",
                         message="Destination exists. Skipped because overwrite was not approved.",
+                    )
+                if checkpoint is None:
+                    report_path = self._write_simplified_bulk_report(report_rows, report_kind, report_path=report_path)
+                else:
+                    checkpoint["copy_rows"] = [asdict(row) for row in report_rows]
+                    checkpoint["paused"] = False
+                    checkpoint["cancelled"] = False
+                    self._save_bulk_folder_checkpoint(checkpoint)
+                    report_path = self._sync_bulk_folder_report(checkpoint)
+
+        if pending_count and checkpoint is not None and str(checkpoint.get("phase", "copy")) == "copy_overwrite":
+            start_index = min(int(checkpoint.get("overwrite_next_index", 0)), len(pending_entries))
+            for pending_offset in range(start_index, len(pending_entries)):
+                self._cancel_bulk_folder_if_requested(checkpoint, "Bulk folder overwrite pass")
+                self._wait_if_bulk_folder_paused(checkpoint, "Bulk folder overwrite pass")
+                self._cancel_bulk_folder_if_requested(checkpoint, "Bulk folder overwrite pass")
+
+                row_index, item_label, item_paths = pending_entries[pending_offset]
+                try:
+                    self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="overwrite_all")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="success",
+                        message="Copied successfully after overwrite approval.",
+                    )
+                except (UserVisibleError, RuntimeError) as error:
+                    self._enqueue_ui(self._append_log, f"{item_label} overwrite failed: {error}")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=str(error),
+                    )
+                except Exception as error:  # pylint: disable=broad-except
+                    self._enqueue_ui(self._append_log, f"{item_label} overwrite unexpected failure: {error}")
+                    row = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=f"Unexpected error: {error}",
+                    )
+
+                report_rows[row_index] = row
+                checkpoint["copy_rows"][row_index] = asdict(row)
+                checkpoint["overwrite_next_index"] = pending_offset + 1
+                checkpoint["paused"] = False
+                checkpoint["cancelled"] = False
+                self._save_bulk_folder_checkpoint(checkpoint)
+                report_path = self._sync_bulk_folder_report(checkpoint)
+
+        elif pending_count and checkpoint is None and any(row.status == "overwrite_pending" for row in report_rows):
+            for row_index, item_label, item_paths in pending_entries:
+                try:
+                    self._copy_one_object(s3_client, item_label, item_paths, overwrite_mode="overwrite_all")
+                    report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="success",
+                        message="Copied successfully after overwrite approval.",
+                    )
+                except (UserVisibleError, RuntimeError) as error:
+                    self._enqueue_ui(self._append_log, f"{item_label} overwrite failed: {error}")
+                    report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=str(error),
+                    )
+                except Exception as error:  # pylint: disable=broad-except
+                    self._enqueue_ui(self._append_log, f"{item_label} overwrite unexpected failure: {error}")
+                    report_rows[row_index] = SimplifiedBulkCopyReportRow(
+                        row_label=item_label,
+                        source_uri=item_paths.source_uri,
+                        destination_uri=item_paths.dest_uri,
+                        status="failed",
+                        message=f"Unexpected error: {error}",
                     )
                 report_path = self._write_simplified_bulk_report(
                     report_rows,
@@ -6553,6 +7018,10 @@ class S3CopyApp:
                 parent=self.root,
             )
 
+        if checkpoint is not None:
+            self._delete_bulk_folder_checkpoint(str(checkpoint["csv_path"]))
+            self._enqueue_ui(self._update_bulk_folder_summary)
+
     def _folder_copy_worker(self, source_folder_uri: str, destination_folder_uri: str) -> None:
         try:
             credentials = self._get_active_credentials()
@@ -6584,11 +7053,23 @@ class S3CopyApp:
         finally:
             self._enqueue_ui(self._set_running, False)
 
-    def _bulk_folder_copy_worker(self, folder_jobs: list[tuple[str, str]]) -> None:
+    def _bulk_folder_copy_worker(self, checkpoint: dict) -> None:
         try:
             credentials = self._get_active_credentials()
             s3_client = create_s3_client(self.config, credentials)
-            copy_items, preview = self._build_bulk_folder_copy_items(s3_client, folder_jobs)
+            phase = str(checkpoint.get("phase", "scan"))
+            if phase == "scan":
+                copy_items, preview = self._scan_bulk_folder_copy_checkpoint(s3_client, checkpoint)
+            else:
+                copy_items = self._bulk_folder_copy_items_from_checkpoint(checkpoint.get("copy_items", []))
+                if not copy_items:
+                    raise UserVisibleError("No copied object list was found in the saved Bulk Folder Copy checkpoint.")
+                preview = FolderCopyPreview(
+                    object_count=len(copy_items),
+                    first_source_uri=str(checkpoint.get("first_source_uri", "")),
+                    first_destination_uri=str(checkpoint.get("first_destination_uri", "")),
+                    folder_pair_count=int(checkpoint.get("total_folder_pairs", 0)),
+                )
 
             self._enqueue_ui(
                 self._append_log,
@@ -6597,7 +7078,15 @@ class S3CopyApp:
                     f"{preview.folder_pair_count} folder pair(s). Starting main copy pass."
                 ),
             )
-            self._execute_folder_copy_items(s3_client, copy_items, "bulk_folder_copy_result", "Bulk Folder Copy")
+            self._execute_folder_copy_items(
+                s3_client,
+                copy_items,
+                "bulk_folder_copy_result",
+                "Bulk Folder Copy",
+                checkpoint=checkpoint,
+            )
+        except BulkFolderCopyInterrupted:
+            pass
         except UserVisibleError as error:
             self._enqueue_ui(self._append_log, f"Bulk folder copy failed: {error}")
             self._enqueue_ui(messagebox.showerror, "Bulk Folder Copy Failed", str(error), parent=self.root)
