@@ -80,6 +80,19 @@ SECTION_TEXT_COLOR = "#0d2d4d"
 CLEAR_BUTTON_WIDTH = 6
 SIMPLIFIED_BULK_REQUIRED_COLUMNS = ("source_uri", "destination_uri")
 BULK_FOLDER_REQUIRED_COLUMNS = ("source_folder_uri", "destination_folder_uri")
+SPREADSHEET_ERROR_PLACEHOLDERS = {
+    "#CALC!",
+    "#DIV/0!",
+    "#FIELD!",
+    "#GETTING_DATA",
+    "#NAME?",
+    "#N/A",
+    "#NULL!",
+    "#NUM!",
+    "#REF!",
+    "#SPILL!",
+    "#VALUE!",
+}
 DOWNLOAD_ALLOWED_FILTERS = ("srt", "vtt", "png", "jpg")
 DOWNLOAD_SHEET_URI_COLUMN_ALIASES = (
     "s3_uri",
@@ -3728,6 +3741,10 @@ class S3CopyApp:
             return ""
         return str(value).strip()
 
+    @staticmethod
+    def _is_spreadsheet_error_placeholder(value: str) -> bool:
+        return value.strip().upper() in SPREADSHEET_ERROR_PLACEHOLDERS
+
     def _read_download_csv_rows(self, file_path: str) -> tuple[list[str], list[dict[str, str]]]:
         with open(file_path, "r", encoding="utf-8-sig", newline="") as file_handle:
             sample = file_handle.read(4096)
@@ -4381,6 +4398,10 @@ class S3CopyApp:
                 destination_folder_uri = str(row.get(normalized_headers["destination_folder_uri"], "")).strip()
 
                 if not source_folder_uri and not destination_folder_uri:
+                    continue
+                if self._is_spreadsheet_error_placeholder(source_folder_uri) or self._is_spreadsheet_error_placeholder(
+                    destination_folder_uri
+                ):
                     continue
 
                 row_label = f"CSV Row {csv_row_number}"
