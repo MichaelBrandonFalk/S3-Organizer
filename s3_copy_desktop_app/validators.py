@@ -14,6 +14,8 @@ class UserInput:
     desired_name: str
     current_caption_name: str = ""
     desired_caption_name: str = ""
+    current_srt_name: str = ""
+    desired_srt_name: str = ""
 
 
 @dataclass
@@ -60,6 +62,8 @@ def sanitize_user_input(
     desired_name: str,
     current_caption_name: str = "",
     desired_caption_name: str = "",
+    current_srt_name: str = "",
+    desired_srt_name: str = "",
 ) -> UserInput:
     return UserInput(
         current_file_name=sanitize_filename(current_file_name),
@@ -67,6 +71,8 @@ def sanitize_user_input(
         desired_name=sanitize_filename(desired_name),
         current_caption_name=sanitize_filename(current_caption_name),
         desired_caption_name=sanitize_filename(desired_caption_name),
+        current_srt_name=sanitize_filename(current_srt_name),
+        desired_srt_name=sanitize_filename(desired_srt_name),
     )
 
 
@@ -100,20 +106,29 @@ def validate_user_input(config: AppConfig, user_input: UserInput) -> list[str]:
     if user_input.desired_name and "." not in user_input.desired_name.strip("."):
         errors.append("Desired Name must include a file extension (example: report.pdf).")
 
-    has_current_caption = bool(user_input.current_caption_name)
-    has_desired_caption = bool(user_input.desired_caption_name)
-    if has_current_caption != has_desired_caption:
-        errors.append(
-            "To copy a caption, provide both Current Caption Name and Desired Caption Name, or leave both blank."
-        )
+    has_current_vtt = bool(user_input.current_caption_name)
+    has_desired_vtt = bool(user_input.desired_caption_name)
+    if has_current_vtt != has_desired_vtt:
+        errors.append("To copy a VTT, provide both Current VTT Name and Desired VTT Name, or leave both blank.")
+
+    has_current_srt = bool(user_input.current_srt_name)
+    has_desired_srt = bool(user_input.desired_srt_name)
+    if has_current_srt != has_desired_srt:
+        errors.append("To copy an SRT, provide both Current SRT Name and Desired SRT Name, or leave both blank.")
 
     if "/" in user_input.current_caption_name:
-        errors.append("Current Caption Name must be a file name only (no slashes).")
+        errors.append("Current VTT Name must be a file name only (no slashes).")
     if "/" in user_input.desired_caption_name:
-        errors.append("Desired Caption Name must be a file name only (no slashes).")
+        errors.append("Desired VTT Name must be a file name only (no slashes).")
+    if "/" in user_input.current_srt_name:
+        errors.append("Current SRT Name must be a file name only (no slashes).")
+    if "/" in user_input.desired_srt_name:
+        errors.append("Desired SRT Name must be a file name only (no slashes).")
 
     if user_input.desired_caption_name and "." not in user_input.desired_caption_name.strip("."):
-        errors.append("Desired Caption Name must include a file extension (example: trailer_en.vtt).")
+        errors.append("Desired VTT Name must include a file extension (example: trailer_en.vtt).")
+    if user_input.desired_srt_name and "." not in user_input.desired_srt_name.strip("."):
+        errors.append("Desired SRT Name must include a file extension (example: trailer_en.srt).")
 
     if not config.source_bucket.strip():
         errors.append("Source bucket is not configured. Open Settings.")

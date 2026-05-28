@@ -8,9 +8,11 @@ on:
     paths:
       - '.github/workflows/build-windows-standard.yml'
       - 'build_windows_standard.bat'
+      - 'build_windows_power.bat'
       - 'generate_windows_icon.py'
       - 's3_copy_desktop_app/**'
       - 's3_copy_desktop_app_launcher.py'
+      - 'power_s3_browser_launcher.py'
       - 's3organizer_mango_1024.png'
 
 jobs:
@@ -42,4 +44,22 @@ jobs:
         with:
           name: s3Organizer-windows-zip
           path: dist/s3Organizer-windows.zip
+          if-no-files-found: error
+
+      - name: Build Windows Power distribution
+        shell: cmd
+        run: build_windows_power.bat
+
+      - name: Upload Windows Power folder artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PowerS3Browser-windows-folder
+          path: dist/PowerS3Browser
+          if-no-files-found: error
+
+      - name: Upload Windows Power zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PowerS3Browser-windows-zip
+          path: dist/PowerS3Browser-windows.zip
           if-no-files-found: error

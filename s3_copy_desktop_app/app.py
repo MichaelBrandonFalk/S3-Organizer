@@ -1405,6 +1405,7 @@ class S3CopyApp:
 
         self.current_file_name_var = tk.StringVar()
         self.current_caption_name_var = tk.StringVar()
+        self.current_srt_name_var = tk.StringVar()
         self.local_file_path_var = tk.StringVar()
         self.local_caption_path_var = tk.StringVar()
         self.rename_current_path_var = tk.StringVar()
@@ -1437,11 +1438,14 @@ class S3CopyApp:
         self.desired_move_folder_var = tk.StringVar()
         self.desired_name_var = tk.StringVar()
         self.desired_caption_name_var = tk.StringVar()
+        self.desired_srt_name_var = tk.StringVar()
 
         self.source_preview_var = tk.StringVar(value="")
         self.dest_preview_var = tk.StringVar(value="")
         self.source_caption_preview_var = tk.StringVar(value="")
         self.dest_caption_preview_var = tk.StringVar(value="")
+        self.source_srt_preview_var = tk.StringVar(value="")
+        self.dest_srt_preview_var = tk.StringVar(value="")
 
         self._build_menu()
         self._build_layout()
@@ -1637,7 +1641,7 @@ class S3CopyApp:
         self._make_clear_button(s3_current_block, self.current_file_name_var, CURRENT_FIELD_BG, row=0, column=2, pady=(0, 6))
         tk.Label(
             s3_current_block,
-            text="Current Caption Name (optional)",
+            text="Current VTT Name (optional)",
             bg=CURRENT_BLOCK_BG,
             fg=SECTION_TEXT_COLOR,
         ).grid(
@@ -1657,6 +1661,30 @@ class S3CopyApp:
             row=1,
             column=2,
             pady=(0, 6),
+        )
+        tk.Label(
+            s3_current_block,
+            text="Current SRT Name (optional)",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(
+            row=2, column=0, sticky="w", padx=(0, 10)
+        )
+        self._make_entry(
+            s3_current_block,
+            self.current_srt_name_var,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=2,
+            pady=(0, 0),
+        )
+        self._make_clear_button(
+            s3_current_block,
+            self.current_srt_name_var,
+            CURRENT_FIELD_BG,
+            row=2,
+            column=2,
+            pady=(0, 0),
         )
 
         direct_current_block = tk.Frame(
@@ -2344,6 +2372,31 @@ class S3CopyApp:
             column=2,
             pady=(0, 8),
         )
+        self.desired_srt_label = tk.Label(
+            self.desired_block,
+            text="Desired SRT Name (optional)",
+            bg=DESIRED_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        )
+        self.desired_srt_label.grid(
+            row=3, column=0, sticky="w", pady=(0, 8), padx=(0, 10)
+        )
+        self.desired_srt_entry = self._make_entry(
+            self.desired_block,
+            self.desired_srt_name_var,
+            bg=DESIRED_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=3,
+            pady=(0, 8),
+        )
+        self.desired_srt_clear_button = self._make_clear_button(
+            self.desired_block,
+            self.desired_srt_name_var,
+            DESIRED_FIELD_BG,
+            row=3,
+            column=2,
+            pady=(0, 8),
+        )
 
         action_row = ttk.Frame(input_frame)
         action_row.grid(row=3, column=0, sticky="e", pady=(0, 2))
@@ -2410,7 +2463,7 @@ class S3CopyApp:
         )
         self.preview_source_caption_label = tk.Label(
             preview_frame,
-            text="Source Caption",
+            text="Source VTT",
             bg=RESULTS_BLOCK_BG,
             fg=SECTION_TEXT_COLOR,
         )
@@ -2429,7 +2482,7 @@ class S3CopyApp:
         )
         self.preview_dest_caption_label = tk.Label(
             preview_frame,
-            text="Destination Caption",
+            text="Destination VTT",
             bg=RESULTS_BLOCK_BG,
             fg=SECTION_TEXT_COLOR,
         )
@@ -2446,12 +2499,50 @@ class S3CopyApp:
             state="readonly",
             readonlybackground=RESULTS_FIELD_BG,
         )
+        self.preview_source_srt_label = tk.Label(
+            preview_frame,
+            text="Source SRT",
+            bg=RESULTS_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        )
+        self.preview_source_srt_label.grid(
+            row=5, column=0, sticky="w", padx=(10, 8), pady=(0, 4)
+        )
+        self.preview_source_srt_entry = self._make_entry(
+            preview_frame,
+            self.source_srt_preview_var,
+            bg=RESULTS_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=5,
+            pady=(0, 4),
+            state="readonly",
+            readonlybackground=RESULTS_FIELD_BG,
+        )
+        self.preview_dest_srt_label = tk.Label(
+            preview_frame,
+            text="Destination SRT",
+            bg=RESULTS_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        )
+        self.preview_dest_srt_label.grid(
+            row=6, column=0, sticky="w", padx=(10, 8), pady=(0, 8)
+        )
+        self.preview_dest_srt_entry = self._make_entry(
+            preview_frame,
+            self.dest_srt_preview_var,
+            bg=RESULTS_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=6,
+            pady=(0, 8),
+            state="readonly",
+            readonlybackground=RESULTS_FIELD_BG,
+        )
         tk.Label(
             preview_frame,
             text="Tip: highlight any resolved path and press Cmd+C to copy.",
             bg=RESULTS_BLOCK_BG,
             fg=SECTION_TEXT_COLOR,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
+        ).grid(row=7, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
 
         log_frame = tk.LabelFrame(
             main,
@@ -2491,6 +2582,7 @@ class S3CopyApp:
         for variable in (
             self.current_file_name_var,
             self.current_caption_name_var,
+            self.current_srt_name_var,
             self.local_file_path_var,
             self.local_caption_path_var,
             self.rename_current_path_var,
@@ -2508,6 +2600,7 @@ class S3CopyApp:
             self.desired_move_folder_var,
             self.desired_name_var,
             self.desired_caption_name_var,
+            self.desired_srt_name_var,
         ):
             variable.trace_add("write", lambda *_: self._refresh_preview())
         if self.inventory_exclusions_text is not None:
@@ -4430,6 +4523,7 @@ class S3CopyApp:
         validation_errors.extend(validate_paths_not_identical(primary_paths))
 
         caption_paths = self._build_caption_paths(user_input)
+        srt_paths = self._build_srt_paths(user_input)
         if caption_paths:
             validation_errors.extend(validate_paths_not_identical(caption_paths))
             if (
@@ -4437,17 +4531,44 @@ class S3CopyApp:
                 and primary_paths.source_key == caption_paths.source_key
             ):
                 validation_errors.append(
-                    "Current Caption Name resolves to the same source object as Current File Name."
+                    "Current VTT Name resolves to the same source object as Current File Name."
                 )
             if (
                 primary_paths.dest_bucket == caption_paths.dest_bucket
                 and primary_paths.dest_key == caption_paths.dest_key
             ):
-                validation_errors.append("Desired Caption Name resolves to the same destination as Desired Name.")
+                validation_errors.append("Desired VTT Name resolves to the same destination as Desired Name.")
+        if srt_paths:
+            validation_errors.extend(validate_paths_not_identical(srt_paths))
+            if (
+                primary_paths.source_bucket == srt_paths.source_bucket
+                and primary_paths.source_key == srt_paths.source_key
+            ):
+                validation_errors.append(
+                    "Current SRT Name resolves to the same source object as Current File Name."
+                )
+            if (
+                primary_paths.dest_bucket == srt_paths.dest_bucket
+                and primary_paths.dest_key == srt_paths.dest_key
+            ):
+                validation_errors.append("Desired SRT Name resolves to the same destination as Desired Name.")
+        if caption_paths and srt_paths:
+            if (
+                caption_paths.source_bucket == srt_paths.source_bucket
+                and caption_paths.source_key == srt_paths.source_key
+            ):
+                validation_errors.append("Current VTT Name and Current SRT Name resolve to the same source object.")
+            if (
+                caption_paths.dest_bucket == srt_paths.dest_bucket
+                and caption_paths.dest_key == srt_paths.dest_key
+            ):
+                validation_errors.append("Desired VTT Name and Desired SRT Name resolve to the same destination.")
 
         copy_items: list[tuple[str, ResolvedS3Paths]] = [(f"{label_prefix} - Primary file", primary_paths)]
         if caption_paths:
-            copy_items.append((f"{label_prefix} - Caption file", caption_paths))
+            copy_items.append((f"{label_prefix} - VTT file", caption_paths))
+        if srt_paths:
+            copy_items.append((f"{label_prefix} - SRT file", srt_paths))
 
         return validation_errors, copy_items
 
@@ -5511,10 +5632,35 @@ class S3CopyApp:
             self.preview_source_caption_entry.grid_remove()
             self.preview_dest_caption_label.grid_remove()
             self.preview_dest_caption_entry.grid_remove()
+            self.preview_source_srt_label.grid_remove()
+            self.preview_source_srt_entry.grid_remove()
+            self.preview_dest_srt_label.grid_remove()
+            self.preview_dest_srt_entry.grid_remove()
         else:
             self.desired_block.grid()
             self.desired_caption_entry.configure(state="normal")
-            self.desired_caption_label.configure(text="Desired Caption Name (optional)")
+            if is_direct_upload_mode:
+                self.desired_caption_label.configure(text="Desired Caption Name (optional)")
+                self.preview_source_caption_label.configure(text="Source Caption")
+                self.preview_dest_caption_label.configure(text="Destination Caption")
+                self.desired_srt_label.grid_remove()
+                self.desired_srt_entry.grid_remove()
+                self.desired_srt_clear_button.grid_remove()
+                self.preview_source_srt_label.grid_remove()
+                self.preview_source_srt_entry.grid_remove()
+                self.preview_dest_srt_label.grid_remove()
+                self.preview_dest_srt_entry.grid_remove()
+            else:
+                self.desired_caption_label.configure(text="Desired VTT Name (optional)")
+                self.preview_source_caption_label.configure(text="Source VTT")
+                self.preview_dest_caption_label.configure(text="Destination VTT")
+                self.desired_srt_label.grid(row=3, column=0, sticky="w", pady=(0, 8), padx=(0, 10))
+                self.desired_srt_entry.grid(row=3, column=1, sticky="ew", pady=(0, 8))
+                self.desired_srt_clear_button.grid(row=3, column=2, sticky="e", padx=(8, 0), pady=(0, 8))
+                self.preview_source_srt_label.grid(row=5, column=0, sticky="w", padx=(10, 8), pady=(0, 4))
+                self.preview_source_srt_entry.grid(row=5, column=1, sticky="ew", pady=(0, 4))
+                self.preview_dest_srt_label.grid(row=6, column=0, sticky="w", padx=(10, 8), pady=(0, 8))
+                self.preview_dest_srt_entry.grid(row=6, column=1, sticky="ew", pady=(0, 8))
             if not self._running:
                 self.bulk_copy_button.configure(state="normal")
             self.settings_menu.entryconfigure(self.bulk_menu_index, state="normal")
@@ -5526,10 +5672,12 @@ class S3CopyApp:
         desired_move_folder = sanitize_folder_path(self.desired_move_folder_var.get())
         desired_name = sanitize_filename(self.desired_name_var.get())
         desired_caption_name = sanitize_filename(self.desired_caption_name_var.get())
+        desired_srt_name = sanitize_filename(self.desired_srt_name_var.get())
 
         dest_bucket = self.config.dest_bucket.strip()
         primary_dest_key = join_key_parts(self.config.dest_prefix, desired_move_folder, desired_name)
         caption_dest_key = join_key_parts(self.config.dest_prefix, desired_move_folder, desired_caption_name)
+        srt_dest_key = join_key_parts(self.config.dest_prefix, desired_move_folder, desired_srt_name)
 
         if is_rename_mode:
             current_destination_path = sanitize_folder_path(self.rename_current_path_var.get())
@@ -5544,6 +5692,8 @@ class S3CopyApp:
             self.dest_preview_var.set(f"s3://{dest_bucket}/{dest_key}" if dest_bucket and dest_key else "")
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
             return
 
         if is_simplified_bulk_mode:
@@ -5557,6 +5707,8 @@ class S3CopyApp:
                 self.dest_preview_var.set(preview.first_destination_uri)
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
             return
 
         if is_inventory_mode:
@@ -5565,6 +5717,8 @@ class S3CopyApp:
             self.dest_preview_var.set("")
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
 
             if not inventory_uri:
                 self.inventory_summary_var.set(
@@ -5594,6 +5748,8 @@ class S3CopyApp:
             self.dest_preview_var.set(download_folder)
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
 
             if sheet_path:
                 errors, items, preview = self._load_download_sheet_items(sheet_path, download_folder)
@@ -5618,6 +5774,8 @@ class S3CopyApp:
             self.dest_preview_var.set(dest_folder_uri)
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
 
             if not source_folder_uri and not dest_folder_uri:
                 self.folder_copy_summary_var.set(
@@ -5640,6 +5798,8 @@ class S3CopyApp:
                 self.dest_preview_var.set(preview.first_destination_uri)
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
             return
 
         if self._is_direct_upload_mode():
@@ -5650,6 +5810,8 @@ class S3CopyApp:
                 self.dest_caption_preview_var.set(f"s3://{dest_bucket}/{caption_dest_key}")
             else:
                 self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
             return
 
         user_input = sanitize_user_input(
@@ -5658,9 +5820,12 @@ class S3CopyApp:
             self.desired_name_var.get(),
             self.current_caption_name_var.get(),
             self.desired_caption_name_var.get(),
+            self.current_srt_name_var.get(),
+            self.desired_srt_name_var.get(),
         )
         paths = build_paths(self.config, user_input)
         caption_paths = self._build_caption_paths(user_input)
+        srt_paths = self._build_srt_paths(user_input)
 
         self.source_preview_var.set(paths.source_uri)
         self.dest_preview_var.set(paths.dest_uri)
@@ -5670,6 +5835,12 @@ class S3CopyApp:
         else:
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
+        if srt_paths:
+            self.source_srt_preview_var.set(srt_paths.source_uri)
+            self.dest_srt_preview_var.set(srt_paths.dest_uri)
+        else:
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
 
     def _set_running(self, running: bool) -> None:
         self._running = running
@@ -5808,15 +5979,34 @@ class S3CopyApp:
         dialog.focus_force()
 
     def _build_caption_paths(self, user_input: UserInput) -> ResolvedS3Paths | None:
-        if not user_input.current_caption_name or not user_input.desired_caption_name:
+        return self._build_optional_named_paths(
+            user_input,
+            user_input.current_caption_name,
+            user_input.desired_caption_name,
+        )
+
+    def _build_srt_paths(self, user_input: UserInput) -> ResolvedS3Paths | None:
+        return self._build_optional_named_paths(
+            user_input,
+            user_input.current_srt_name,
+            user_input.desired_srt_name,
+        )
+
+    def _build_optional_named_paths(
+        self,
+        user_input: UserInput,
+        current_name: str,
+        desired_name: str,
+    ) -> ResolvedS3Paths | None:
+        if not current_name or not desired_name:
             return None
 
-        caption_input = replace(
+        optional_input = replace(
             user_input,
-            current_file_name=user_input.current_caption_name,
-            desired_name=user_input.desired_caption_name,
+            current_file_name=current_name,
+            desired_name=desired_name,
         )
-        return build_paths(self.config, caption_input)
+        return build_paths(self.config, optional_input)
 
     def _copy_one_object(
         self,
@@ -6027,6 +6217,8 @@ class S3CopyApp:
             self.desired_name_var.get(),
             self.current_caption_name_var.get(),
             self.desired_caption_name_var.get(),
+            self.current_srt_name_var.get(),
+            self.desired_srt_name_var.get(),
         )
 
         validation_errors, copy_items = self._prepare_copy_items(user_input, "Single copy")
