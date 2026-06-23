@@ -1401,7 +1401,10 @@ class S3CopyApp:
         self.inventory_audit_button: ttk.Button | None = None
         self.audit_requirements_button: ttk.Button | None = None
         self.inventory_exclusions_text: ScrolledText | None = None
+        self.log_area: ScrolledText | None = None
         self.cancel_button: ttk.Button | None = None
+        self._page_canvas: tk.Canvas | None = None
+        self._page_scroll_window: int | None = None
 
         self.current_file_name_var = tk.StringVar()
         self.current_caption_name_var = tk.StringVar()
@@ -1565,9 +1568,97 @@ class S3CopyApp:
     def _handle_redo_shortcut(self, event) -> str | None:
         return self._undo_manager.redo_from_widget(event.widget)
 
+    def _create_scrollable_page(self) -> ttk.Frame:
+        outer = ttk.Frame(self.root)
+        outer.pack(fill="both", expand=True)
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+
+        page_canvas = tk.Canvas(
+            outer,
+            bg=self.root.cget("background"),
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        page_scrollbar = ttk.Scrollbar(outer, orient="vertical", command=page_canvas.yview)
+        page_canvas.configure(yscrollcommand=page_scrollbar.set)
+        page_canvas.grid(row=0, column=0, sticky="nsew")
+        page_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        main = ttk.Frame(page_canvas, padding=16)
+        self._page_canvas = page_canvas
+        self._page_scroll_window = page_canvas.create_window((0, 0), window=main, anchor="nw")
+        main.bind("<Configure>", self._update_page_scroll_region)
+        page_canvas.bind("<Configure>", self._resize_page_scroll_window)
+        self._bind_page_scroll_wheel()
+        return main
+
+    def _update_page_scroll_region(self, _event=None) -> None:
+        if self._page_canvas is not None:
+            self._page_canvas.configure(scrollregion=self._page_canvas.bbox("all"))
+
+    def _resize_page_scroll_window(self, event) -> None:
+        if self._page_canvas is not None and self._page_scroll_window is not None:
+            self._page_canvas.itemconfigure(self._page_scroll_window, width=event.width)
+
+    def _bind_page_scroll_wheel(self) -> None:
+        self.root.bind_all("<MouseWheel>", self._on_page_mouse_wheel, add="+")
+        self.root.bind_all("<Button-4>", self._on_page_linux_scroll_up, add="+")
+        self.root.bind_all("<Button-5>", self._on_page_linux_scroll_down, add="+")
+
+    def _on_page_mouse_wheel(self, event) -> str | None:
+        if self._page_canvas is None or not self._should_scroll_page(event.widget):
+            return None
+
+        if event.delta == 0:
+            return "break"
+        if IS_MACOS:
+            scroll_units = -1 if event.delta > 0 else 1
+        else:
+            scroll_units = int(-event.delta / 120)
+        if scroll_units == 0:
+            scroll_units = -1 if event.delta > 0 else 1
+        self._page_canvas.yview_scroll(scroll_units, "units")
+        return "break"
+
+    def _on_page_linux_scroll_up(self, event) -> str | None:
+        if self._page_canvas is None or not self._should_scroll_page(event.widget):
+            return None
+        self._page_canvas.yview_scroll(-1, "units")
+        return "break"
+
+    def _on_page_linux_scroll_down(self, event) -> str | None:
+        if self._page_canvas is None or not self._should_scroll_page(event.widget):
+            return None
+        self._page_canvas.yview_scroll(1, "units")
+        return "break"
+
+    def _should_scroll_page(self, widget: tk.Widget) -> bool:
+        try:
+            if widget.winfo_toplevel() is not self.root:
+                return False
+        except tk.TclError:
+            return False
+
+        for scrollable_text in (self.log_area, self.inventory_exclusions_text):
+            if scrollable_text is None:
+                continue
+            if self._is_widget_or_descendant(widget, scrollable_text):
+                return False
+            if widget is getattr(scrollable_text, "vbar", None):
+                return False
+        return True
+
+    def _is_widget_or_descendant(self, widget: tk.Widget, parent: tk.Widget) -> bool:
+        current: tk.Widget | None = widget
+        while current is not None:
+            if current is parent:
+                return True
+            current = current.master
+        return False
+
     def _build_layout(self) -> None:
-        main = ttk.Frame(self.root, padding=16)
-        main.pack(fill="both", expand=True)
+        main = self._create_scrollable_page()
         main.columnconfigure(0, weight=1)
         main.rowconfigure(2, weight=1)
 
