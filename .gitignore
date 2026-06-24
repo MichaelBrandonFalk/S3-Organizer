@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 .venv/
 .venv-x86/
+.venv-build-*/
 .pyenv-x86/
 .build-x86-tcltk/
 .x86-tcltk/

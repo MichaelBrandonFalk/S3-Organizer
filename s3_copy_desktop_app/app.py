@@ -348,6 +348,17 @@ class DownloadReportRow:
 
 
 @dataclass
+class S3CopyReportRow:
+    row_label: str
+    source_uri: str
+    destination_uri: str
+    source_status: str
+    destination_status: str
+    status: str
+    message: str
+
+
+@dataclass
 class SimplifiedBulkCsvPreview:
     row_count: int
     first_source_uri: str
@@ -5133,6 +5144,51 @@ class S3CopyApp:
                 )
         return report_path
 
+    @staticmethod
+    def _s3_copy_report_path() -> Path:
+        downloads_dir = Path.home() / "Downloads"
+        if downloads_dir.exists():
+            base_dir = downloads_dir
+        else:
+            base_dir = Path.home()
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        return base_dir / f"{APP_FILE_SLUG}_s3_copy_{timestamp}.csv"
+
+    def _write_s3_copy_report(
+        self,
+        report_rows: list[S3CopyReportRow],
+        report_path: Path | None = None,
+    ) -> Path:
+        if report_path is None:
+            report_path = self._s3_copy_report_path()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8", newline="") as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(
+                [
+                    "row_label",
+                    "source_uri",
+                    "destination_uri",
+                    "source_status",
+                    "destination_status",
+                    "status",
+                    "message",
+                ]
+            )
+            for row in report_rows:
+                writer.writerow(
+                    [
+                        row.row_label,
+                        row.source_uri,
+                        row.destination_uri,
+                        row.source_status,
+                        row.destination_status,
+                        row.status,
+                        row.message,
+                    ]
+                )
+        return report_path
+
     def _open_report_file(self, report_path: Path) -> None:
         try:
             if IS_WINDOWS:
@@ -6105,9 +6161,11 @@ class S3CopyApp:
         item_label: str,
         paths: ResolvedS3Paths,
         overwrite_mode: str = "prompt",
+        approved_overwrites: set[tuple[str, str]] | None = None,
     ) -> None:
         source_ref = S3ObjectRef(bucket=paths.source_bucket, key=paths.source_key)
         dest_ref = S3ObjectRef(bucket=paths.dest_bucket, key=paths.dest_key)
+        approved_overwrite_refs = approved_overwrites or set()
 
         self._enqueue_ui(self._append_log, f"Starting {item_label} copy: {paths.source_uri} -> {paths.dest_uri}")
 
@@ -6117,7 +6175,13 @@ class S3CopyApp:
         destination_exists = object_exists(s3_client, dest_ref)
         allow_overwrite = False
         if destination_exists:
-            if overwrite_mode == "overwrite_all":
+            if (dest_ref.bucket, dest_ref.key) in approved_overwrite_refs:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"{item_label} destination already exists. Proceeding because overwrite was approved during preflight.",
+                )
+                allow_overwrite = True
+            elif overwrite_mode == "overwrite_all":
                 self._enqueue_ui(
                     self._append_log,
                     f"{item_label} destination already exists. Proceeding because Overwrite All was approved.",
@@ -6335,7 +6399,7 @@ class S3CopyApp:
             return
 
         self._set_running(True)
-        threading.Thread(target=self._copy_worker, args=(copy_items,), daemon=True).start()
+        threading.Thread(target=self._single_copy_worker, args=(copy_items,), daemon=True).start()
 
     def _on_direct_upload_clicked(self) -> None:
         errors, upload_items = self._prepare_direct_upload_items(
@@ -6503,6 +6567,196 @@ class S3CopyApp:
             args=(checkpoint,),
             daemon=True,
         ).start()
+
+    def _build_s3_copy_preflight_report(
+        self,
+        s3_client,
+        copy_items: list[tuple[str, ResolvedS3Paths]],
+    ) -> list[S3CopyReportRow]:
+        report_rows: list[S3CopyReportRow] = []
+        for item_label, item_paths in copy_items:
+            source_ref = S3ObjectRef(bucket=item_paths.source_bucket, key=item_paths.source_key)
+            dest_ref = S3ObjectRef(bucket=item_paths.dest_bucket, key=item_paths.dest_key)
+            source_status = "unknown"
+            destination_status = "unknown"
+            status = "failed"
+            message = ""
+
+            try:
+                source_exists = object_exists(s3_client, source_ref)
+                source_status = "exists" if source_exists else "missing"
+                if not source_exists:
+                    message = "Source file not found. No copy attempted."
+                else:
+                    destination_exists = object_exists(s3_client, dest_ref)
+                    destination_status = "exists" if destination_exists else "available"
+                    if destination_exists:
+                        status = "overwrite_required"
+                        message = "Destination already exists. Awaiting overwrite approval."
+                    else:
+                        status = "ready"
+                        message = "Preflight passed."
+            except UserVisibleError as error:
+                message = str(error)
+
+            report_rows.append(
+                S3CopyReportRow(
+                    row_label=item_label,
+                    source_uri=item_paths.source_uri,
+                    destination_uri=item_paths.dest_uri,
+                    source_status=source_status,
+                    destination_status=destination_status,
+                    status=status,
+                    message=message,
+                )
+            )
+        return report_rows
+
+    def _single_copy_worker(self, copy_items: list[tuple[str, ResolvedS3Paths]]) -> None:
+        report_path = self._s3_copy_report_path()
+
+        try:
+            credentials = self._get_active_credentials()
+            s3_client = create_s3_client(self.config, credentials)
+            self._enqueue_ui(self._append_log, "Validating S3 Copy source and destination objects before copying.")
+
+            report_rows = self._build_s3_copy_preflight_report(s3_client, copy_items)
+            self._write_s3_copy_report(report_rows, report_path)
+
+            preflight_failures = [row for row in report_rows if row.status == "failed"]
+            if preflight_failures:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"S3 Copy preflight failed. No copy was performed. Report written to {report_path}",
+                )
+                self._enqueue_ui(
+                    messagebox.showerror,
+                    "Copy Preflight Failed",
+                    (
+                        "Copy did not start because preflight validation found a problem.\n\n"
+                        f"Report saved to:\n{report_path}"
+                    ),
+                    parent=self.root,
+                )
+                return
+
+            overwrite_rows = [row for row in report_rows if row.status == "overwrite_required"]
+            approved_overwrites: set[tuple[str, str]] = set()
+            if overwrite_rows:
+                overwrite_lines = "\n".join(row.destination_uri for row in overwrite_rows)
+                should_overwrite = self._call_on_ui_thread(
+                    messagebox.askyesno,
+                    "Destination Exists",
+                    (
+                        "Preflight found existing destination object(s):\n\n"
+                        f"{overwrite_lines}\n\n"
+                        "Continue and overwrite these destination object(s)?"
+                    ),
+                    parent=self.root,
+                )
+                if not should_overwrite:
+                    for row in overwrite_rows:
+                        row.status = "skipped"
+                        row.message = "Destination exists and overwrite was not approved. No copy attempted."
+                    self._write_s3_copy_report(report_rows, report_path)
+                    self._enqueue_ui(
+                        self._append_log,
+                        f"S3 Copy cancelled after preflight. Report written to {report_path}",
+                    )
+                    self._enqueue_ui(
+                        messagebox.showinfo,
+                        "Copy Cancelled",
+                        f"Copy was cancelled before execution.\n\nReport saved to:\n{report_path}",
+                        parent=self.root,
+                    )
+                    return
+
+                for (item_label, item_paths), row in zip(copy_items, report_rows):
+                    if row.status == "overwrite_required":
+                        row.status = "ready"
+                        row.message = "Overwrite approved during preflight."
+                        approved_overwrites.add((item_paths.dest_bucket, item_paths.dest_key))
+                self._write_s3_copy_report(report_rows, report_path)
+
+            failure_count = 0
+            success_count = 0
+            for (item_label, item_paths), row in zip(copy_items, report_rows):
+                if row.status != "ready":
+                    continue
+                try:
+                    self._copy_one_object(
+                        s3_client,
+                        item_label,
+                        item_paths,
+                        approved_overwrites=approved_overwrites,
+                    )
+                    row.status = "success"
+                    row.message = "Copied successfully."
+                    success_count += 1
+                except UserVisibleError as error:
+                    row.status = "failed"
+                    row.message = str(error)
+                    failure_count += 1
+                    self._enqueue_ui(self._append_log, f"{item_label} failed: {error}")
+                except Exception as error:  # pylint: disable=broad-except
+                    row.status = "failed"
+                    row.message = f"Unexpected failure: {error}"
+                    failure_count += 1
+                    self._enqueue_ui(self._append_log, f"{item_label} unexpected failure: {error}")
+                finally:
+                    self._write_s3_copy_report(report_rows, report_path)
+
+            if failure_count:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"S3 Copy finished with failures. Successes: {success_count}. Failures: {failure_count}. Report written to {report_path}",
+                )
+                self._enqueue_ui(
+                    messagebox.showerror,
+                    "Copy Finished With Failures",
+                    (
+                        f"Copy finished with failures.\n\nSuccesses: {success_count}\n"
+                        f"Failures: {failure_count}\n\nReport saved to:\n{report_path}"
+                    ),
+                    parent=self.root,
+                )
+                return
+
+            self._enqueue_ui(
+                self._append_log,
+                f"Copy succeeded. Source object(s) were not deleted. Report written to {report_path}",
+            )
+            self._play_completion_notification()
+            success_lines = [
+                f"Objects copied: {success_count}",
+                f"Report saved to: {report_path}",
+            ]
+            if len(copy_items) <= 6:
+                for item_label, item_paths in copy_items:
+                    success_lines.append(f"{item_label} Source: {item_paths.source_uri}")
+                    success_lines.append(f"{item_label} Destination: {item_paths.dest_uri}")
+            else:
+                success_lines.append("See Status / Output for per-item details.")
+            self._enqueue_ui(
+                messagebox.showinfo,
+                "Success",
+                "Copy completed successfully.\n\n" + "\n".join(success_lines),
+                parent=self.root,
+            )
+
+        except RuntimeError as error:
+            self._enqueue_ui(self._append_log, f"Configuration error: {error}")
+            self._enqueue_ui(messagebox.showerror, "Configuration Error", str(error), parent=self.root)
+        except Exception as error:  # pylint: disable=broad-except
+            self._enqueue_ui(self._append_log, f"Unexpected failure: {error}")
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Copy Failed",
+                f"Unexpected error: {error}",
+                parent=self.root,
+            )
+        finally:
+            self._enqueue_ui(self._set_running, False)
 
     def _copy_worker(self, copy_items: list[tuple[str, ResolvedS3Paths]]) -> None:
 
@@ -7739,11 +7993,20 @@ class S3CopyApp:
             self._enqueue_ui(self._set_running, False)
 
 
+def _is_tk_startup_smoke_requested() -> bool:
+    return os.getenv("S3_APP_VERIFY_TK_STARTUP") == "1" or "--s3-app-verify-tk-startup" in sys.argv
+
+
 def main() -> None:
     root = tk.Tk()
     ttk.Style(root)
     app = S3CopyApp(root)
     _ = app
+    if _is_tk_startup_smoke_requested():
+        root.update_idletasks()
+        root.destroy()
+        print("Packaged Tk startup smoke check passed.", file=sys.stderr, flush=True)
+        return
     root.mainloop()
 
 

@@ -36,7 +36,10 @@ if exist "%ICON_PATH%" set "ICON_ARGS=--icon %ICON_PATH%"
   --collect-submodules keyring.backends ^
   --collect-data keyring ^
   --collect-data certifi ^
+  --collect-all openpyxl ^
   --hidden-import tkinter ^
+  --hidden-import certifi ^
+  --hidden-import openpyxl ^
   %ICON_ARGS% ^
   s3_copy_desktop_app_launcher.py
 
