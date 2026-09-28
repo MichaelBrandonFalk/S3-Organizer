@@ -79,6 +79,7 @@ RESULTS_FIELD_BG = "#e3f0fb"
 SECTION_TEXT_COLOR = "#0d2d4d"
 CLEAR_BUTTON_WIDTH = 6
 SIMPLIFIED_BULK_REQUIRED_COLUMNS = ("source_uri", "destination_uri")
+BULK_UPLOAD_REQUIRED_COLUMNS = ("local_file_path", "desired_move_folder", "desired_name")
 BULK_FOLDER_REQUIRED_COLUMNS = ("source_folder_uri", "destination_folder_uri")
 SPREADSHEET_ERROR_PLACEHOLDERS = {
     "#CALC!",
@@ -321,6 +322,24 @@ class DirectUploadItem:
     local_path: str
     destination_ref: S3ObjectRef
     destination_uri: str
+
+
+@dataclass
+class BulkUploadCsvPreview:
+    row_count: int
+    object_count: int
+    first_local_path: str
+    first_destination_uri: str
+
+
+@dataclass
+class BulkUploadReportRow:
+    row_label: str
+    local_path: str
+    destination_uri: str
+    destination_status: str
+    status: str
+    message: str
 
 
 @dataclass
@@ -803,9 +822,11 @@ class BulkCopyDialog(tk.Toplevel):
     )
     DIRECT_UPLOAD_COLUMNS = (
         ("title", "Title #", 120),
-        ("local_file_path", "Local File Name", 280),
+        ("local_file_path", "Local File Path", 280),
+        ("local_caption_path", "Local Caption Path (optional)", 280),
         ("desired_move_folder", "Desired Move Folder", 180),
         ("desired_name", "Desired Name", 180),
+        ("desired_caption_name", "Desired Caption Name (optional)", 220),
     )
     S3_COPY_HEADER_ALIASES = {
         "title": "title",
@@ -830,10 +851,18 @@ class BulkCopyDialog(tk.Toplevel):
         "local filepath": "local_file_path",
         "local file": "local_file_path",
         "local_file_path": "local_file_path",
+        "local caption name": "local_caption_path",
+        "local caption path": "local_caption_path",
+        "local caption path (optional)": "local_caption_path",
+        "local caption": "local_caption_path",
+        "local_caption_path": "local_caption_path",
         "desired move folder": "desired_move_folder",
         "desired_move_folder": "desired_move_folder",
         "desired name": "desired_name",
         "desired_name": "desired_name",
+        "desired caption name": "desired_caption_name",
+        "desired caption name (optional)": "desired_caption_name",
+        "desired_caption_name": "desired_caption_name",
     }
 
     def __init__(self, parent: tk.Tk, mode: str, on_run) -> None:
@@ -1129,8 +1158,22 @@ class BulkCopyDialog(tk.Toplevel):
     def _build_template_rows(self) -> list[tuple[str, ...]]:
         if self.mode == "direct_upload":
             return [
-                ("1", "/Users/your.name/Downloads/source_video_1.mp4", "folder1/folder2", "new_video_name.mp4"),
-                ("2", "/Users/your.name/Downloads/source_video_2.mp4", "folder1/folder2", "new_video_name_2.mp4"),
+                (
+                    "1",
+                    "/Users/your.name/Downloads/source_video_1.mp4",
+                    "/Users/your.name/Downloads/source_video_1.vtt",
+                    "folder1/folder2",
+                    "new_video_name.mp4",
+                    "new_video_name.vtt",
+                ),
+                (
+                    "2",
+                    "/Users/your.name/Downloads/source_video_2.mp4",
+                    "",
+                    "folder1/folder2",
+                    "new_video_name_2.mp4",
+                    "",
+                ),
             ]
         return [
             ("Title 1", "current_video_name.mp4", "", "folder1/folder2", "new_video_name.mp4", ""),
@@ -1422,6 +1465,10 @@ class S3CopyApp:
         self.current_srt_name_var = tk.StringVar()
         self.local_file_path_var = tk.StringVar()
         self.local_caption_path_var = tk.StringVar()
+        self.bulk_upload_csv_path_var = tk.StringVar()
+        self.bulk_upload_summary_var = tk.StringVar(
+            value="Load a CSV created from the template to upload multiple local files."
+        )
         self.rename_current_path_var = tk.StringVar()
         self.rename_current_name_var = tk.StringVar()
         self.rename_desired_name_var = tk.StringVar()
@@ -1690,6 +1737,7 @@ class S3CopyApp:
         self.mode_notebook.configure(height=188)
         self.s3_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.direct_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
+        self.bulk_upload_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.rename_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.simplified_bulk_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.inventory_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
@@ -1698,6 +1746,7 @@ class S3CopyApp:
         self.bulk_folder_copy_mode_frame = ttk.Frame(self.mode_notebook, padding=6) if POWER_MODE else None
         self.mode_notebook.add(self.s3_mode_frame, text="S3 Copy")
         self.mode_notebook.add(self.direct_mode_frame, text="Direct Upload")
+        self.mode_notebook.add(self.bulk_upload_mode_frame, text="Bulk Upload")
         self.mode_notebook.add(self.rename_mode_frame, text="Rename in Destination")
         self.mode_notebook.add(self.simplified_bulk_mode_frame, text="Simplified Bulk Copy")
         self.mode_notebook.add(self.inventory_mode_frame, text="Inventory")
@@ -1708,6 +1757,7 @@ class S3CopyApp:
             self.mode_notebook.add(self.bulk_folder_copy_mode_frame, text="Bulk Folder Copy")
         self.s3_mode_frame.columnconfigure(0, weight=1)
         self.direct_mode_frame.columnconfigure(0, weight=1)
+        self.bulk_upload_mode_frame.columnconfigure(0, weight=1)
         self.rename_mode_frame.columnconfigure(0, weight=1)
         self.simplified_bulk_mode_frame.columnconfigure(0, weight=1)
         self.inventory_mode_frame.columnconfigure(0, weight=1)
@@ -1879,6 +1929,72 @@ class S3CopyApp:
         ).grid(
             row=1, column=3, sticky="e", padx=(8, 0), pady=(0, 6)
         )
+
+        bulk_upload_block = tk.Frame(
+            self.bulk_upload_mode_frame,
+            bg=CURRENT_BLOCK_BG,
+            bd=1,
+            relief="groove",
+            padx=10,
+            pady=8,
+        )
+        bulk_upload_block.grid(row=0, column=0, sticky="ew")
+        bulk_upload_block.columnconfigure(1, weight=1)
+        tk.Label(
+            bulk_upload_block,
+            text="CSV File",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 6), padx=(0, 10))
+        self.bulk_upload_csv_entry = self._make_entry(
+            bulk_upload_block,
+            self.bulk_upload_csv_path_var,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            row=0,
+        )
+        self._make_clear_button(
+            bulk_upload_block,
+            self.bulk_upload_csv_path_var,
+            CURRENT_FIELD_BG,
+            row=0,
+            column=2,
+            pady=(0, 6),
+        )
+        tk.Button(
+            bulk_upload_block,
+            text="Browse...",
+            command=self._browse_bulk_upload_csv,
+            bg=CURRENT_FIELD_BG,
+            fg=SECTION_TEXT_COLOR,
+            activebackground=CURRENT_FIELD_BG,
+            activeforeground=SECTION_TEXT_COLOR,
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=0,
+            padx=8,
+            pady=2,
+            takefocus=False,
+        ).grid(row=0, column=3, sticky="e", padx=(8, 0), pady=(0, 6))
+        tk.Label(
+            bulk_upload_block,
+            text="Summary",
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+        ).grid(row=1, column=0, sticky="nw", padx=(0, 10))
+        tk.Label(
+            bulk_upload_block,
+            textvariable=self.bulk_upload_summary_var,
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+            justify="left",
+            wraplength=640,
+        ).grid(row=1, column=1, columnspan=3, sticky="w")
+        ttk.Button(
+            bulk_upload_block,
+            text="Download CSV Template...",
+            command=self.download_bulk_upload_template,
+        ).grid(row=2, column=3, sticky="e", pady=(10, 0))
 
         rename_block = tk.Frame(
             self.rename_mode_frame,
@@ -2676,7 +2792,7 @@ class S3CopyApp:
             (
                 "App started. Use S3 Copy, Direct Upload, Rename, Inventory, Download"
                 + (", Folder Copy, Bulk Folder Copy" if POWER_MODE else "")
-                + ", or Simplified Bulk Copy, then click the main action button."
+                + ", Bulk Upload, or Simplified Bulk Copy, then click the main action button."
             )
         )
 
@@ -2687,6 +2803,7 @@ class S3CopyApp:
             self.current_srt_name_var,
             self.local_file_path_var,
             self.local_caption_path_var,
+            self.bulk_upload_csv_path_var,
             self.rename_current_path_var,
             self.rename_current_name_var,
             self.rename_desired_name_var,
@@ -2731,7 +2848,12 @@ class S3CopyApp:
         if self._running:
             messagebox.showerror("Bulk Copy", "A copy is already running. Wait for it to finish first.", parent=self.root)
             return
-        if self._is_rename_mode() or self._is_simplified_bulk_mode() or self._is_download_mode():
+        if (
+            self._is_bulk_upload_mode()
+            or self._is_rename_mode()
+            or self._is_simplified_bulk_mode()
+            or self._is_download_mode()
+        ):
             messagebox.showerror(
                 "Bulk Mode",
                 "Bulk dialog mode is available for S3 Copy and Direct Upload tabs only.",
@@ -2917,6 +3039,23 @@ class S3CopyApp:
         file_path = filedialog.askopenfilename(parent=self.root, title="Select Local Caption File")
         if file_path:
             self.local_caption_path_var.set(file_path)
+
+    def _browse_bulk_upload_csv(self) -> None:
+        file_path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Select Bulk Upload CSV",
+            filetypes=(("CSV files", "*.csv"), ("All files", "*.*")),
+        )
+        if file_path:
+            self.bulk_upload_csv_path_var.set(file_path)
+            self.root.after(10, self._show_bulk_upload_csv_path_end)
+
+    def _show_bulk_upload_csv_path_end(self) -> None:
+        try:
+            self.bulk_upload_csv_entry.icursor("end")
+            self.bulk_upload_csv_entry.xview_moveto(1.0)
+        except Exception:  # pylint: disable=broad-except
+            pass
 
     def _browse_simplified_bulk_csv(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -3620,6 +3759,10 @@ class S3CopyApp:
         selected_tab = self.mode_notebook.select()
         return selected_tab == str(self.direct_mode_frame)
 
+    def _is_bulk_upload_mode(self) -> bool:
+        selected_tab = self.mode_notebook.select()
+        return selected_tab == str(self.bulk_upload_mode_frame)
+
     def _is_rename_mode(self) -> bool:
         selected_tab = self.mode_notebook.select()
         return selected_tab == str(self.rename_mode_frame)
@@ -3652,8 +3795,22 @@ class S3CopyApp:
         if mode == "direct_upload":
             columns = BulkCopyDialog.DIRECT_UPLOAD_COLUMNS
             template_rows = [
-                ("1", "/Users/your.name/Downloads/source_video_1.mp4", "folder1/folder2", "new_video_name.mp4"),
-                ("2", "/Users/your.name/Downloads/source_video_2.mp4", "folder1/folder2", "new_video_name_2.mp4"),
+                (
+                    "1",
+                    "/Users/your.name/Downloads/source_video_1.mp4",
+                    "/Users/your.name/Downloads/source_video_1.vtt",
+                    "folder1/folder2",
+                    "new_video_name.mp4",
+                    "new_video_name.vtt",
+                ),
+                (
+                    "2",
+                    "/Users/your.name/Downloads/source_video_2.mp4",
+                    "",
+                    "folder1/folder2",
+                    "new_video_name_2.mp4",
+                    "",
+                ),
             ]
             initial_file = "bulk_upload_title_mapping.csv"
         else:
@@ -4362,6 +4519,46 @@ class S3CopyApp:
                 writer.writerow([row.row_label, row.source_uri, row.local_path, row.status, row.message])
         return report_path
 
+    @staticmethod
+    def _bulk_upload_report_path() -> Path:
+        downloads_dir = Path.home() / "Downloads"
+        base_dir = downloads_dir if downloads_dir.exists() else Path.home()
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        return base_dir / f"{APP_FILE_SLUG}_bulk_upload_{timestamp}.csv"
+
+    def _write_bulk_upload_report(
+        self,
+        report_rows: list[BulkUploadReportRow],
+        report_path: Path | None = None,
+    ) -> Path:
+        if report_path is None:
+            report_path = self._bulk_upload_report_path()
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8", newline="") as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(
+                [
+                    "row_label",
+                    "local_path",
+                    "destination_uri",
+                    "destination_status",
+                    "status",
+                    "message",
+                ]
+            )
+            for row in report_rows:
+                writer.writerow(
+                    [
+                        row.row_label,
+                        row.local_path,
+                        row.destination_uri,
+                        row.destination_status,
+                        row.status,
+                        row.message,
+                    ]
+                )
+        return report_path
+
     def _build_download_items_from_prefix(
         self,
         s3_client,
@@ -4915,6 +5112,128 @@ class S3CopyApp:
             f"Ready: {len(copy_items)} row(s) loaded from {Path(csv_path).name}."
         )
 
+    def _load_bulk_upload_items(
+        self,
+        csv_path: str,
+    ) -> tuple[list[str], list[DirectUploadItem], BulkUploadCsvPreview | None]:
+        file_path = csv_path.strip()
+        errors: list[str] = []
+        upload_items: list[DirectUploadItem] = []
+
+        if not file_path:
+            return ["CSV File cannot be blank."], upload_items, None
+        if not os.path.isfile(file_path):
+            return [f"CSV File not found: {file_path}"], upload_items, None
+        if Path(file_path).suffix.lower() != ".csv":
+            return ["Bulk upload requires a .csv file."], upload_items, None
+
+        with open(file_path, "r", encoding="utf-8-sig", newline="") as file_handle:
+            reader = csv.DictReader(file_handle)
+            if not reader.fieldnames:
+                return ["No header row found in CSV file."], upload_items, None
+
+            resolved_headers: dict[str, str] = {}
+            for header in reader.fieldnames:
+                if not header:
+                    continue
+                normalized_header = BulkCopyDialog._normalize_header(header)
+                column_id = BulkCopyDialog.DIRECT_UPLOAD_HEADER_ALIASES.get(normalized_header)
+                if column_id:
+                    resolved_headers[column_id] = header
+
+            missing_headers = [
+                column_name
+                for column_name in BULK_UPLOAD_REQUIRED_COLUMNS
+                if column_name not in resolved_headers
+            ]
+            if missing_headers:
+                missing_text = ", ".join(missing_headers)
+                return [f"CSV must include these columns: {missing_text}"], upload_items, None
+
+            populated_row_count = 0
+            first_local_path = ""
+            first_destination_uri = ""
+            destination_labels: dict[tuple[str, str], str] = {}
+
+            for csv_row_number, row in enumerate(reader, start=2):
+                values = {
+                    column_id: str(row.get(header, "") or "").strip()
+                    for column_id, header in resolved_headers.items()
+                }
+                payload_values = [
+                    values.get("local_file_path", ""),
+                    values.get("local_caption_path", ""),
+                    values.get("desired_move_folder", ""),
+                    values.get("desired_name", ""),
+                    values.get("desired_caption_name", ""),
+                ]
+                if not any(payload_values):
+                    continue
+                if any(self._is_spreadsheet_error_placeholder(value) for value in payload_values if value):
+                    continue
+
+                row_label = values.get("title", "").strip() or f"CSV Row {csv_row_number}"
+                populated_row_count += 1
+                row_errors, row_items = self._prepare_direct_upload_items(
+                    row_label,
+                    values.get("local_file_path", ""),
+                    values.get("local_caption_path", ""),
+                    values.get("desired_move_folder", ""),
+                    values.get("desired_name", ""),
+                    values.get("desired_caption_name", ""),
+                )
+                if row_errors:
+                    errors.extend([f"{row_label}: {error}" for error in row_errors])
+                    continue
+
+                for item in row_items:
+                    destination_key = (item.destination_ref.bucket, item.destination_ref.key)
+                    earlier_label = destination_labels.get(destination_key)
+                    if earlier_label:
+                        errors.append(
+                            f"{item.label}: destination duplicates {earlier_label}: {item.destination_uri}"
+                        )
+                        continue
+                    destination_labels[destination_key] = item.label
+                    upload_items.append(item)
+
+                if row_items and not first_local_path:
+                    first_local_path = row_items[0].local_path
+                    first_destination_uri = row_items[0].destination_uri
+
+        if populated_row_count == 0 and not errors:
+            errors.append("No populated rows found in the CSV file.")
+
+        preview = None
+        if first_local_path and first_destination_uri:
+            preview = BulkUploadCsvPreview(
+                row_count=populated_row_count,
+                object_count=len(upload_items),
+                first_local_path=first_local_path,
+                first_destination_uri=first_destination_uri,
+            )
+        return errors, upload_items, preview
+
+    def _update_bulk_upload_summary(self) -> None:
+        csv_path = self.bulk_upload_csv_path_var.get().strip()
+        if not csv_path:
+            self.bulk_upload_summary_var.set(
+                "Load a CSV created from the template to upload multiple local files."
+            )
+            return
+
+        errors, upload_items, preview = self._load_bulk_upload_items(csv_path)
+        if errors:
+            self.bulk_upload_summary_var.set(errors[0])
+            return
+        if preview is None:
+            self.bulk_upload_summary_var.set("No populated rows found in the CSV file.")
+            return
+
+        self.bulk_upload_summary_var.set(
+            f"Ready: {preview.row_count} row(s), {len(upload_items)} object(s) from {Path(csv_path).name}."
+        )
+
     def _load_bulk_folder_copy_jobs(
         self,
         csv_path: str,
@@ -5383,6 +5702,33 @@ class S3CopyApp:
             daemon=True,
         ).start()
 
+    def _on_bulk_upload_clicked(self) -> None:
+        csv_path = self.bulk_upload_csv_path_var.get().strip()
+        errors, upload_items, preview = self._load_bulk_upload_items(csv_path)
+        if errors:
+            messagebox.showerror("Bulk Upload Validation", "\n".join(errors), parent=self.root)
+            self._append_log(f"Bulk upload validation failed: {' | '.join(errors)}")
+            return
+        if not upload_items or preview is None:
+            messagebox.showerror("Bulk Upload", "No populated rows found in the CSV file.", parent=self.root)
+            return
+
+        confirm_message = (
+            "Bulk upload is ready for destination preflight.\n\n"
+            f"CSV rows: {preview.row_count}\n"
+            f"Objects to upload: {preview.object_count}\n\n"
+            "No files will be uploaded until all destinations have been checked. Continue?"
+        )
+        if not messagebox.askokcancel("Confirm Bulk Upload", confirm_message, parent=self.root):
+            self._append_log("Bulk upload cancelled before destination preflight.")
+            return
+
+        self._set_running(True)
+        self._append_log(
+            f"Starting bulk upload preflight for {preview.row_count} row(s), {preview.object_count} object(s)."
+        )
+        threading.Thread(target=self._bulk_upload_worker, args=(upload_items,), daemon=True).start()
+
     def _on_simplified_bulk_dry_run_clicked(self) -> None:
         if self._running:
             return
@@ -5670,14 +6016,18 @@ class S3CopyApp:
         for index, row in enumerate(rows, start=1):
             row_label = str(row.get("title", "")).strip() or f"Title {index}"
             local_file_path = str(row.get("local_file_path", ""))
+            local_caption_path = str(row.get("local_caption_path", ""))
             desired_move_folder = str(row.get("desired_move_folder", ""))
             desired_name = str(row.get("desired_name", ""))
+            desired_caption_name = str(row.get("desired_caption_name", ""))
 
             if not any(
                 [
                     local_file_path.strip(),
+                    local_caption_path.strip(),
                     desired_move_folder.strip(),
                     desired_name.strip(),
+                    desired_caption_name.strip(),
                 ]
             ):
                 continue
@@ -5686,10 +6036,10 @@ class S3CopyApp:
             row_errors, row_items = self._prepare_direct_upload_items(
                 row_label,
                 local_file_path,
-                "",
+                local_caption_path,
                 desired_move_folder,
                 desired_name,
-                "",
+                desired_caption_name,
             )
             if row_errors:
                 all_errors.extend([f"{row_label}: {error}" for error in row_errors])
@@ -5721,11 +6071,12 @@ class S3CopyApp:
 
         self._set_running(True)
         self._append_log(f"Starting bulk direct upload for {title_count} title(s), {object_count} object(s).")
-        threading.Thread(target=self._upload_worker, args=(all_upload_items,), daemon=True).start()
+        threading.Thread(target=self._bulk_upload_worker, args=(all_upload_items,), daemon=True).start()
         return True
 
     def _refresh_preview(self) -> None:
         is_direct_upload_mode = self._is_direct_upload_mode()
+        is_bulk_upload_mode = self._is_bulk_upload_mode()
         is_rename_mode = self._is_rename_mode()
         is_simplified_bulk_mode = self._is_simplified_bulk_mode()
         is_inventory_mode = self._is_inventory_mode()
@@ -5735,6 +6086,8 @@ class S3CopyApp:
         self._update_pause_button_state()
         if is_rename_mode:
             self.copy_button.configure(text="Rename")
+        elif is_bulk_upload_mode:
+            self.copy_button.configure(text="Run Bulk Upload")
         elif is_simplified_bulk_mode:
             self.copy_button.configure(text="Run CSV Bulk Copy")
         elif is_inventory_mode:
@@ -5765,7 +6118,8 @@ class S3CopyApp:
                 self.audit_requirements_button.grid_remove()
 
         if (
-            is_rename_mode
+            is_bulk_upload_mode
+            or is_rename_mode
             or is_simplified_bulk_mode
             or is_inventory_mode
             or is_download_mode
@@ -5837,6 +6191,21 @@ class S3CopyApp:
             else:
                 self.source_preview_var.set("")
             self.dest_preview_var.set(f"s3://{dest_bucket}/{dest_key}" if dest_bucket and dest_key else "")
+            self.source_caption_preview_var.set("")
+            self.dest_caption_preview_var.set("")
+            self.source_srt_preview_var.set("")
+            self.dest_srt_preview_var.set("")
+            return
+
+        if is_bulk_upload_mode:
+            self._update_bulk_upload_summary()
+            errors, upload_items, preview = self._load_bulk_upload_items(self.bulk_upload_csv_path_var.get())
+            if errors or not upload_items or preview is None:
+                self.source_preview_var.set("")
+                self.dest_preview_var.set("")
+            else:
+                self.source_preview_var.set(preview.first_local_path)
+                self.dest_preview_var.set(preview.first_destination_uri)
             self.source_caption_preview_var.set("")
             self.dest_caption_preview_var.set("")
             self.source_srt_preview_var.set("")
@@ -6005,7 +6374,8 @@ class S3CopyApp:
         else:
             self.copy_button.configure(state="normal")
             if (
-                self._is_rename_mode()
+                self._is_bulk_upload_mode()
+                or self._is_rename_mode()
                 or self._is_simplified_bulk_mode()
                 or self._is_inventory_mode()
                 or self._is_folder_copy_mode()
@@ -6245,7 +6615,12 @@ class S3CopyApp:
             return "overwrite_all" if row_status == "internal_conflict" else "deny_existing"
         return configured_mode
 
-    def _upload_one_object(self, s3_client, item: DirectUploadItem) -> None:
+    def _upload_one_object(
+        self,
+        s3_client,
+        item: DirectUploadItem,
+        approved_overwrites: set[tuple[str, str]] | None = None,
+    ) -> None:
         self._enqueue_ui(self._append_log, f"Starting {item.label} upload: {item.local_path} -> {item.destination_uri}")
 
         if not os.path.isfile(item.local_path):
@@ -6253,24 +6628,31 @@ class S3CopyApp:
 
         destination_exists = object_exists(s3_client, item.destination_ref)
         if destination_exists:
-            self._enqueue_ui(
-                self._append_log,
-                f"{item.label} destination already exists. Waiting for overwrite confirmation.",
-            )
-            should_proceed = self._call_on_ui_thread(
-                messagebox.askyesno,
-                "Destination Exists",
-                (
-                    f"{item.label} destination object already exists.\n\n"
-                    f"Destination: {item.destination_uri}\n\n"
-                    "Uploading now will overwrite that object. Continue?"
-                ),
-                parent=self.root,
-            )
-            if not should_proceed:
-                raise UserVisibleError(
-                    f"{item.label} upload cancelled. Destination object already exists and overwrite was not approved."
+            destination_key = (item.destination_ref.bucket, item.destination_ref.key)
+            if approved_overwrites and destination_key in approved_overwrites:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"{item.label} destination overwrite was approved during bulk preflight.",
                 )
+            else:
+                self._enqueue_ui(
+                    self._append_log,
+                    f"{item.label} destination already exists. Waiting for overwrite confirmation.",
+                )
+                should_proceed = self._call_on_ui_thread(
+                    messagebox.askyesno,
+                    "Destination Exists",
+                    (
+                        f"{item.label} destination object already exists.\n\n"
+                        f"Destination: {item.destination_uri}\n\n"
+                        "Uploading now will overwrite that object. Continue?"
+                    ),
+                    parent=self.root,
+                )
+                if not should_proceed:
+                    raise UserVisibleError(
+                        f"{item.label} upload cancelled. Destination object already exists and overwrite was not approved."
+                    )
 
         upload_local_file(
             s3_client,
@@ -6336,6 +6718,10 @@ class S3CopyApp:
 
     def on_copy_clicked(self) -> None:
         if self._running:
+            return
+
+        if self._is_bulk_upload_mode():
+            self._on_bulk_upload_clicked()
             return
 
         if self._is_rename_mode():
@@ -7902,6 +8288,183 @@ class S3CopyApp:
                 messagebox.showerror,
                 "Download Failed",
                 f"Unexpected error: {error}",
+                parent=self.root,
+            )
+        finally:
+            self._enqueue_ui(self._set_running, False)
+
+    def _bulk_upload_worker(self, upload_items: list[DirectUploadItem]) -> None:
+        report_path = self._bulk_upload_report_path()
+        report_rows = [
+            BulkUploadReportRow(
+                row_label=item.label,
+                local_path=item.local_path,
+                destination_uri=item.destination_uri,
+                destination_status="not_checked",
+                status="pending",
+                message="Awaiting destination preflight.",
+            )
+            for item in upload_items
+        ]
+        try:
+            credentials = self._get_active_credentials()
+            s3_client = create_s3_client(self.config, credentials)
+            existing_destinations: set[tuple[str, str]] = set()
+            preflight_failure_count = 0
+
+            for index, item in enumerate(upload_items):
+                try:
+                    destination_exists = object_exists(s3_client, item.destination_ref)
+                    destination_status = "exists" if destination_exists else "available"
+                    if destination_exists:
+                        existing_destinations.add((item.destination_ref.bucket, item.destination_ref.key))
+                    report_rows[index] = BulkUploadReportRow(
+                        row_label=item.label,
+                        local_path=item.local_path,
+                        destination_uri=item.destination_uri,
+                        destination_status=destination_status,
+                        status="ready",
+                        message=(
+                            "Destination exists; overwrite approval required."
+                            if destination_exists
+                            else "Ready to upload."
+                        ),
+                    )
+                except Exception as error:  # pylint: disable=broad-except
+                    preflight_failure_count += 1
+                    report_rows[index] = BulkUploadReportRow(
+                        row_label=item.label,
+                        local_path=item.local_path,
+                        destination_uri=item.destination_uri,
+                        destination_status="check_failed",
+                        status="failed",
+                        message=f"Destination preflight failed: {error}",
+                    )
+                    break
+
+            report_path = self._write_bulk_upload_report(report_rows, report_path)
+            if preflight_failure_count:
+                for row in report_rows:
+                    if row.status in {"ready", "pending"}:
+                        if row.status == "pending":
+                            row.destination_status = "not_checked"
+                        row.status = "not_started"
+                        row.message = "Not uploaded because destination preflight did not complete."
+                self._write_bulk_upload_report(report_rows, report_path)
+                self._enqueue_ui(
+                    self._append_log,
+                    f"Bulk upload stopped during preflight. Report written to {report_path}",
+                )
+                self._enqueue_ui(
+                    messagebox.showerror,
+                    "Bulk Upload Preflight Failed",
+                    (
+                        f"Destination checks failed for {preflight_failure_count} object(s). Nothing was uploaded.\n\n"
+                        f"Report saved to:\n{report_path}"
+                    ),
+                    parent=self.root,
+                )
+                return
+
+            if existing_destinations:
+                existing_rows = [row for row in report_rows if row.destination_status == "exists"]
+                preview_lines = [row.destination_uri for row in existing_rows[:8]]
+                if len(existing_rows) > len(preview_lines):
+                    preview_lines.append(f"...and {len(existing_rows) - len(preview_lines)} more")
+                overwrite_approved = self._call_on_ui_thread(
+                    messagebox.askyesno,
+                    "Bulk Upload Destinations Exist",
+                    (
+                        f"{len(existing_rows)} destination object(s) already exist:\n\n"
+                        + "\n".join(preview_lines)
+                        + "\n\nOverwrite all listed existing objects and continue?\n"
+                        "Choosing No cancels the entire upload before any files are changed."
+                    ),
+                    parent=self.root,
+                )
+                if not overwrite_approved:
+                    for row in report_rows:
+                        row.status = "cancelled"
+                        row.message = "Bulk upload cancelled before execution; no files were uploaded."
+                    self._write_bulk_upload_report(report_rows, report_path)
+                    self._enqueue_ui(
+                        self._append_log,
+                        f"Bulk upload cancelled after preflight. Report written to {report_path}",
+                    )
+                    self._enqueue_ui(
+                        messagebox.showinfo,
+                        "Bulk Upload Cancelled",
+                        f"No files were uploaded.\n\nReport saved to:\n{report_path}",
+                        parent=self.root,
+                    )
+                    return
+
+            success_count = 0
+            failure_count = 0
+            for index, item in enumerate(upload_items):
+                try:
+                    self._upload_one_object(
+                        s3_client,
+                        item,
+                        approved_overwrites=existing_destinations,
+                    )
+                    report_rows[index].status = "success"
+                    report_rows[index].message = "Uploaded successfully."
+                    success_count += 1
+                except Exception as error:  # pylint: disable=broad-except
+                    report_rows[index].status = "failed"
+                    report_rows[index].message = str(error)
+                    failure_count += 1
+                    self._enqueue_ui(self._append_log, f"{item.label} upload failed: {error}")
+                self._write_bulk_upload_report(report_rows, report_path)
+
+            self._play_completion_notification()
+            self._enqueue_ui(
+                self._append_log,
+                (
+                    f"Bulk upload finished. Successes: {success_count}. Failures: {failure_count}. "
+                    f"Report written to {report_path}"
+                ),
+            )
+            message_title = "Bulk Upload Complete" if failure_count == 0 else "Bulk Upload Finished with Failures"
+            message_text = (
+                f"Uploaded successfully: {success_count}\n"
+                f"Failed: {failure_count}\n\n"
+                f"Report saved to:\n{report_path}"
+            )
+            self._enqueue_ui(
+                messagebox.showinfo if failure_count == 0 else messagebox.showwarning,
+                message_title,
+                message_text,
+                parent=self.root,
+            )
+        except RuntimeError as error:
+            for row in report_rows:
+                if row.status == "pending":
+                    row.status = "failed"
+                    row.message = f"Configuration error: {error}"
+            report_path = self._write_bulk_upload_report(report_rows, report_path)
+            self._enqueue_ui(
+                self._append_log,
+                f"Bulk upload configuration error: {error}. Report written to {report_path}",
+            )
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Configuration Error",
+                f"{error}\n\nReport saved to:\n{report_path}",
+                parent=self.root,
+            )
+        except Exception as error:  # pylint: disable=broad-except
+            for row in report_rows:
+                if row.status == "pending":
+                    row.status = "failed"
+                    row.message = f"Bulk upload failed before execution: {error}"
+            report_path = self._write_bulk_upload_report(report_rows, report_path)
+            self._enqueue_ui(self._append_log, f"Bulk upload failed: {error}. Report written to {report_path}")
+            self._enqueue_ui(
+                messagebox.showerror,
+                "Bulk Upload Failed",
+                f"{error}\n\nReport saved to:\n{report_path}",
                 parent=self.root,
             )
         finally:
