@@ -824,7 +824,7 @@ class BulkCopyDialog(tk.Toplevel):
         ("title", "Title #", 120),
         ("local_file_path", "Local File Path", 280),
         ("local_caption_path", "Local Caption Path (optional)", 280),
-        ("desired_move_folder", "Desired Move Folder", 180),
+        ("desired_move_folder", "Desired Move Folder (relative folder only)", 280),
         ("desired_name", "Desired Name", 180),
         ("desired_caption_name", "Desired Caption Name (optional)", 220),
     )
@@ -857,6 +857,7 @@ class BulkCopyDialog(tk.Toplevel):
         "local caption": "local_caption_path",
         "local_caption_path": "local_caption_path",
         "desired move folder": "desired_move_folder",
+        "desired move folder (relative folder only)": "desired_move_folder",
         "desired_move_folder": "desired_move_folder",
         "desired name": "desired_name",
         "desired_name": "desired_name",
@@ -1152,29 +1153,12 @@ class BulkCopyDialog(tk.Toplevel):
 
     def _template_file_name(self) -> str:
         if self.mode == "direct_upload":
-            return "bulk_upload_title_mapping.csv"
+            return "bulk_upload_template.csv"
         return "bulk_copy_template.csv"
 
     def _build_template_rows(self) -> list[tuple[str, ...]]:
         if self.mode == "direct_upload":
-            return [
-                (
-                    "1",
-                    "/Users/your.name/Downloads/source_video_1.mp4",
-                    "/Users/your.name/Downloads/source_video_1.vtt",
-                    "folder1/folder2",
-                    "new_video_name.mp4",
-                    "new_video_name.vtt",
-                ),
-                (
-                    "2",
-                    "/Users/your.name/Downloads/source_video_2.mp4",
-                    "",
-                    "folder1/folder2",
-                    "new_video_name_2.mp4",
-                    "",
-                ),
-            ]
+            return []
         return [
             ("Title 1", "current_video_name.mp4", "", "folder1/folder2", "new_video_name.mp4", ""),
             ("Title 2", "current_video_name_2.mp4", "current_video_name_2.vtt", "folder1/folder2", "new_video_name_2.mp4", "new_video_name_2.vtt"),
@@ -1225,7 +1209,8 @@ class BulkCopyDialog(tk.Toplevel):
                     "CSV Template Saved",
                     (
                         f"CSV template saved to:\n{save_path}\n\n"
-                        "Fill Desired Move Folder and Desired Name columns, save, then import spreadsheet."
+                        "Fill Desired Move Folder with a path relative to the configured destination prefix "
+                        "(for example: folder1/folder2), not a full s3:// URI."
                     ),
                     parent=self,
                 )
@@ -1995,6 +1980,17 @@ class S3CopyApp:
             text="Download CSV Template...",
             command=self.download_bulk_upload_template,
         ).grid(row=2, column=3, sticky="e", pady=(10, 0))
+        tk.Label(
+            bulk_upload_block,
+            text=(
+                "Desired Move Folder is relative to the destination prefix in Settings "
+                "(example: folder1/folder2). Do not enter a full s3:// URI."
+            ),
+            bg=CURRENT_BLOCK_BG,
+            fg=SECTION_TEXT_COLOR,
+            justify="left",
+            wraplength=640,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
         rename_block = tk.Frame(
             self.rename_mode_frame,
@@ -3794,25 +3790,8 @@ class S3CopyApp:
     def _download_template_for_mode(self, mode: str) -> None:
         if mode == "direct_upload":
             columns = BulkCopyDialog.DIRECT_UPLOAD_COLUMNS
-            template_rows = [
-                (
-                    "1",
-                    "/Users/your.name/Downloads/source_video_1.mp4",
-                    "/Users/your.name/Downloads/source_video_1.vtt",
-                    "folder1/folder2",
-                    "new_video_name.mp4",
-                    "new_video_name.vtt",
-                ),
-                (
-                    "2",
-                    "/Users/your.name/Downloads/source_video_2.mp4",
-                    "",
-                    "folder1/folder2",
-                    "new_video_name_2.mp4",
-                    "",
-                ),
-            ]
-            initial_file = "bulk_upload_title_mapping.csv"
+            template_rows = []
+            initial_file = "bulk_upload_template.csv"
         else:
             columns = BulkCopyDialog.S3_COPY_COLUMNS
             template_rows = [
@@ -3837,7 +3816,15 @@ class S3CopyApp:
                 writer = csv.writer(file_handle)
                 writer.writerow(headers)
                 writer.writerows(template_rows)
-            messagebox.showinfo("Template Saved", f"Template saved to:\n{save_path}", parent=self.root)
+            if mode == "direct_upload":
+                message = (
+                    f"Template saved to:\n{save_path}\n\n"
+                    "Desired Move Folder must be relative to the destination prefix in Settings "
+                    "(for example: folder1/folder2), not a full s3:// URI."
+                )
+            else:
+                message = f"Template saved to:\n{save_path}"
+            messagebox.showinfo("Template Saved", message, parent=self.root)
         except Exception as error:  # pylint: disable=broad-except
             messagebox.showerror("Template Save Failed", str(error), parent=self.root)
 
@@ -4882,7 +4869,8 @@ class S3CopyApp:
     ) -> tuple[list[str], list[DirectUploadItem]]:
         local_file_path = local_file_path.strip()
         local_caption_path = local_caption_path.strip()
-        desired_move_folder = sanitize_folder_path(desired_move_folder)
+        raw_desired_move_folder = desired_move_folder.strip()
+        desired_move_folder = sanitize_folder_path(raw_desired_move_folder)
         desired_name = sanitize_filename(desired_name)
         desired_caption_name = sanitize_filename(desired_caption_name)
 
@@ -4894,6 +4882,11 @@ class S3CopyApp:
 
         if not desired_move_folder:
             errors.append("Desired Move Folder cannot be blank.")
+        elif raw_desired_move_folder.lower().startswith("s3://"):
+            errors.append(
+                "Desired Move Folder must be a relative folder path, not a full S3 URI "
+                "(example: folder1/folder2)."
+            )
         if not desired_name:
             errors.append("Desired Name cannot be blank.")
         if "/" in desired_name:
@@ -5174,6 +5167,26 @@ class S3CopyApp:
 
                 row_label = values.get("title", "").strip() or f"CSV Row {csv_row_number}"
                 populated_row_count += 1
+                if not first_local_path and not first_destination_uri:
+                    preview_local_path = values.get("local_file_path", "").strip()
+                    preview_folder_raw = values.get("desired_move_folder", "").strip()
+                    preview_name = sanitize_filename(values.get("desired_name", ""))
+                    preview_bucket = self.config.dest_bucket.strip()
+                    preview_destination_uri = ""
+                    if (
+                        preview_bucket
+                        and preview_name
+                        and not preview_folder_raw.lower().startswith("s3://")
+                    ):
+                        preview_key = join_key_parts(
+                            self.config.dest_prefix,
+                            sanitize_folder_path(preview_folder_raw),
+                            preview_name,
+                        )
+                        if preview_key:
+                            preview_destination_uri = f"s3://{preview_bucket}/{preview_key}"
+                    first_local_path = preview_local_path
+                    first_destination_uri = preview_destination_uri
                 row_errors, row_items = self._prepare_direct_upload_items(
                     row_label,
                     values.get("local_file_path", ""),
@@ -5197,7 +5210,7 @@ class S3CopyApp:
                     destination_labels[destination_key] = item.label
                     upload_items.append(item)
 
-                if row_items and not first_local_path:
+                if row_items and not first_local_path and not first_destination_uri:
                     first_local_path = row_items[0].local_path
                     first_destination_uri = row_items[0].destination_uri
 
@@ -5205,7 +5218,7 @@ class S3CopyApp:
             errors.append("No populated rows found in the CSV file.")
 
         preview = None
-        if first_local_path and first_destination_uri:
+        if first_local_path or first_destination_uri:
             preview = BulkUploadCsvPreview(
                 row_count=populated_row_count,
                 object_count=len(upload_items),
@@ -6199,8 +6212,10 @@ class S3CopyApp:
 
         if is_bulk_upload_mode:
             self._update_bulk_upload_summary()
-            errors, upload_items, preview = self._load_bulk_upload_items(self.bulk_upload_csv_path_var.get())
-            if errors or not upload_items or preview is None:
+            _errors, _upload_items, preview = self._load_bulk_upload_items(
+                self.bulk_upload_csv_path_var.get()
+            )
+            if preview is None:
                 self.source_preview_var.set("")
                 self.dest_preview_var.set("")
             else:
