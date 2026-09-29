@@ -79,7 +79,7 @@ RESULTS_FIELD_BG = "#e3f0fb"
 SECTION_TEXT_COLOR = "#0d2d4d"
 CLEAR_BUTTON_WIDTH = 6
 SIMPLIFIED_BULK_REQUIRED_COLUMNS = ("source_uri", "destination_uri")
-BULK_UPLOAD_REQUIRED_COLUMNS = ("local_file_path", "desired_move_folder", "desired_name")
+BULK_UPLOAD_REQUIRED_COLUMNS = ("local_file_path",)
 BULK_FOLDER_REQUIRED_COLUMNS = ("source_folder_uri", "destination_folder_uri")
 SPREADSHEET_ERROR_PLACEHOLDERS = {
     "#CALC!",
@@ -822,11 +822,8 @@ class BulkCopyDialog(tk.Toplevel):
     )
     DIRECT_UPLOAD_COLUMNS = (
         ("title", "Title #", 120),
-        ("local_file_path", "Local File Path", 280),
-        ("local_caption_path", "Local Caption Path (optional)", 280),
-        ("desired_move_folder", "Desired Move Folder (relative folder only)", 280),
-        ("desired_name", "Desired Name", 180),
-        ("desired_caption_name", "Desired Caption Name (optional)", 220),
+        ("local_file_path", "Local File Path", 520),
+        ("desired_move_folder", "Desired Move Folder (optional)", 320),
     )
     S3_COPY_HEADER_ALIASES = {
         "title": "title",
@@ -858,6 +855,7 @@ class BulkCopyDialog(tk.Toplevel):
         "local_caption_path": "local_caption_path",
         "desired move folder": "desired_move_folder",
         "desired move folder (relative folder only)": "desired_move_folder",
+        "desired move folder (optional)": "desired_move_folder",
         "desired_move_folder": "desired_move_folder",
         "desired name": "desired_name",
         "desired_name": "desired_name",
@@ -881,7 +879,8 @@ class BulkCopyDialog(tk.Toplevel):
             self.columns = self.DIRECT_UPLOAD_COLUMNS
             self.header_aliases = self.DIRECT_UPLOAD_HEADER_ALIASES
             self.description_text = (
-                "Optional bulk mode: select source files, then export CSV template to fill Desired columns and import it back."
+                "Select local files and optionally add a relative destination folder. "
+                "Each file keeps its original name."
             )
             self.starter_row = None
             self.run_action_label = "Run Bulk Upload"
@@ -1209,8 +1208,8 @@ class BulkCopyDialog(tk.Toplevel):
                     "CSV Template Saved",
                     (
                         f"CSV template saved to:\n{save_path}\n\n"
-                        "Fill Desired Move Folder with a path relative to the configured destination prefix "
-                        "(for example: folder1/folder2), not a full s3:// URI."
+                        "Desired Move Folder is optional. Leave it blank to upload directly to the "
+                        "configured destination bucket/prefix. Each file keeps its original name."
                     ),
                     parent=self,
                 )
@@ -1389,13 +1388,11 @@ class BulkCopyDialog(tk.Toplevel):
 
         next_title_number = self._next_direct_upload_title_number()
         for offset, file_path in enumerate(selected_files):
-            file_name = Path(file_path).name
             title = str(next_title_number + offset)
             row_values_by_column = {
                 "title": title,
                 "local_file_path": str(file_path),
                 "desired_move_folder": default_move_folder,
-                "desired_name": file_name,
             }
             row_values = tuple(row_values_by_column.get(column_id, "") for column_id in column_order)
             self._add_row(row_values)
@@ -1452,7 +1449,7 @@ class S3CopyApp:
         self.local_caption_path_var = tk.StringVar()
         self.bulk_upload_csv_path_var = tk.StringVar()
         self.bulk_upload_summary_var = tk.StringVar(
-            value="Load a CSV created from the template to upload multiple local files."
+            value="Load a CSV with Local File Path and optional Desired Move Folder columns."
         )
         self.rename_current_path_var = tk.StringVar()
         self.rename_current_name_var = tk.StringVar()
@@ -1983,8 +1980,8 @@ class S3CopyApp:
         tk.Label(
             bulk_upload_block,
             text=(
-                "Desired Move Folder is relative to the destination prefix in Settings "
-                "(example: folder1/folder2). Do not enter a full s3:// URI."
+                "Each file keeps its original name. Leave Desired Move Folder blank to upload directly "
+                "to the destination bucket/prefix in Settings, or enter a relative folder."
             ),
             bg=CURRENT_BLOCK_BG,
             fg=SECTION_TEXT_COLOR,
@@ -3819,8 +3816,8 @@ class S3CopyApp:
             if mode == "direct_upload":
                 message = (
                     f"Template saved to:\n{save_path}\n\n"
-                    "Desired Move Folder must be relative to the destination prefix in Settings "
-                    "(for example: folder1/folder2), not a full s3:// URI."
+                    "Desired Move Folder is optional. Leave it blank to upload directly to the "
+                    "destination bucket/prefix in Settings. Each file keeps its original name."
                 )
             else:
                 message = f"Template saved to:\n{save_path}"
@@ -4942,6 +4939,51 @@ class S3CopyApp:
 
         return errors, items
 
+    def _prepare_bulk_upload_items(
+        self,
+        label_prefix: str,
+        local_file_path: str,
+        desired_move_folder: str,
+    ) -> tuple[list[str], list[DirectUploadItem]]:
+        local_file_path = local_file_path.strip()
+        raw_desired_move_folder = desired_move_folder.strip()
+        desired_move_folder = sanitize_folder_path(raw_desired_move_folder)
+        local_file_name = sanitize_filename(local_file_path).rsplit("/", 1)[-1]
+
+        errors: list[str] = []
+        if not local_file_path:
+            errors.append("Local File is required for bulk upload.")
+        elif not os.path.isfile(local_file_path):
+            errors.append(f"Local File not found: {local_file_path}")
+
+        if raw_desired_move_folder.lower().startswith("s3://"):
+            errors.append(
+                "Desired Move Folder must be blank or a relative folder path, not a full S3 URI "
+                "(example: folder1/folder2)."
+            )
+
+        dest_bucket = self.config.dest_bucket.strip()
+        if not dest_bucket:
+            errors.append("Destination bucket is not configured. Open Settings.")
+
+        if errors:
+            return errors, []
+
+        destination_key = join_key_parts(
+            self.config.dest_prefix,
+            desired_move_folder,
+            local_file_name,
+        )
+        destination_ref = S3ObjectRef(bucket=dest_bucket, key=destination_key)
+        return errors, [
+            DirectUploadItem(
+                label=f"{label_prefix} - Primary file",
+                local_path=local_file_path,
+                destination_ref=destination_ref,
+                destination_uri=f"s3://{dest_bucket}/{destination_key}",
+            )
+        ]
+
     def _prepare_rename_item(self) -> tuple[list[str], tuple[S3ObjectRef, S3ObjectRef, str, str] | None]:
         current_path = sanitize_folder_path(self.rename_current_path_var.get())
         current_name = sanitize_filename(self.rename_current_name_var.get())
@@ -5155,10 +5197,7 @@ class S3CopyApp:
                 }
                 payload_values = [
                     values.get("local_file_path", ""),
-                    values.get("local_caption_path", ""),
                     values.get("desired_move_folder", ""),
-                    values.get("desired_name", ""),
-                    values.get("desired_caption_name", ""),
                 ]
                 if not any(payload_values):
                     continue
@@ -5170,7 +5209,7 @@ class S3CopyApp:
                 if not first_local_path and not first_destination_uri:
                     preview_local_path = values.get("local_file_path", "").strip()
                     preview_folder_raw = values.get("desired_move_folder", "").strip()
-                    preview_name = sanitize_filename(values.get("desired_name", ""))
+                    preview_name = sanitize_filename(preview_local_path).rsplit("/", 1)[-1]
                     preview_bucket = self.config.dest_bucket.strip()
                     preview_destination_uri = ""
                     if (
@@ -5187,13 +5226,10 @@ class S3CopyApp:
                             preview_destination_uri = f"s3://{preview_bucket}/{preview_key}"
                     first_local_path = preview_local_path
                     first_destination_uri = preview_destination_uri
-                row_errors, row_items = self._prepare_direct_upload_items(
+                row_errors, row_items = self._prepare_bulk_upload_items(
                     row_label,
                     values.get("local_file_path", ""),
-                    values.get("local_caption_path", ""),
                     values.get("desired_move_folder", ""),
-                    values.get("desired_name", ""),
-                    values.get("desired_caption_name", ""),
                 )
                 if row_errors:
                     errors.extend([f"{row_label}: {error}" for error in row_errors])
@@ -5231,7 +5267,7 @@ class S3CopyApp:
         csv_path = self.bulk_upload_csv_path_var.get().strip()
         if not csv_path:
             self.bulk_upload_summary_var.set(
-                "Load a CSV created from the template to upload multiple local files."
+                "Load a CSV with Local File Path and optional Desired Move Folder columns."
             )
             return
 
@@ -6024,42 +6060,28 @@ class S3CopyApp:
 
         all_errors: list[str] = []
         all_upload_items: list[DirectUploadItem] = []
-        resolved_title_count = 0
+        resolved_file_count = 0
 
         for index, row in enumerate(rows, start=1):
             row_label = str(row.get("title", "")).strip() or f"Title {index}"
             local_file_path = str(row.get("local_file_path", ""))
-            local_caption_path = str(row.get("local_caption_path", ""))
             desired_move_folder = str(row.get("desired_move_folder", ""))
-            desired_name = str(row.get("desired_name", ""))
-            desired_caption_name = str(row.get("desired_caption_name", ""))
 
-            if not any(
-                [
-                    local_file_path.strip(),
-                    local_caption_path.strip(),
-                    desired_move_folder.strip(),
-                    desired_name.strip(),
-                    desired_caption_name.strip(),
-                ]
-            ):
+            if not any([local_file_path.strip(), desired_move_folder.strip()]):
                 continue
 
-            resolved_title_count += 1
-            row_errors, row_items = self._prepare_direct_upload_items(
+            resolved_file_count += 1
+            row_errors, row_items = self._prepare_bulk_upload_items(
                 row_label,
                 local_file_path,
-                local_caption_path,
                 desired_move_folder,
-                desired_name,
-                desired_caption_name,
             )
             if row_errors:
                 all_errors.extend([f"{row_label}: {error}" for error in row_errors])
                 continue
             all_upload_items.extend(row_items)
 
-        if resolved_title_count == 0:
+        if resolved_file_count == 0:
             messagebox.showerror(
                 "Bulk Direct Upload",
                 "No populated rows found. Fill at least one row first.",
@@ -6072,10 +6094,9 @@ class S3CopyApp:
             self._append_log(f"Bulk direct upload validation failed: {' | '.join(all_errors)}")
             return False
 
-        object_count = len(all_upload_items)
-        title_count = sum(1 for item in all_upload_items if item.label.endswith("Primary file"))
+        file_count = len(all_upload_items)
         confirm_message = (
-            f"Bulk direct upload is ready.\n\nTitles: {title_count}\nObjects to upload: {object_count}\n\n"
+            f"Bulk direct upload is ready.\n\nFiles to upload: {file_count}\n\n"
             "Continue?"
         )
         if not messagebox.askokcancel("Confirm Bulk Direct Upload", confirm_message, parent=self.root):
@@ -6083,7 +6104,7 @@ class S3CopyApp:
             return False
 
         self._set_running(True)
-        self._append_log(f"Starting bulk direct upload for {title_count} title(s), {object_count} object(s).")
+        self._append_log(f"Starting bulk direct upload for {file_count} file(s).")
         threading.Thread(target=self._bulk_upload_worker, args=(all_upload_items,), daemon=True).start()
         return True
 
