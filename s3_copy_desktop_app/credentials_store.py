@@ -23,6 +23,23 @@ _CACHED_CREDENTIALS: Optional["AwsCredentials"] = None
 IS_MACOS = sys.platform == "darwin"
 
 
+def _ensure_secure_linux_backend() -> None:
+    """Linux builds use Secret Service only; never fall back to a file keyring."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        from keyring.backends.SecretService import Keyring
+        backend = Keyring()
+        if backend.priority <= 0:
+            raise RuntimeError("Secret Service is unavailable")
+        keyring.set_keyring(backend)
+    except Exception as error:
+        raise RuntimeError(
+            "The encrypted Linux keyring is unavailable. Unlock Passwords and Keys "
+            "(login keyring), or choose session-only credentials in Settings."
+        ) from error
+
+
 @dataclass
 class AwsCredentials:
     access_key_id: str
@@ -87,6 +104,8 @@ def load_credentials(refresh: bool = False) -> Optional[AwsCredentials]:
     if _CACHE_INITIALIZED and not refresh:
         return _CACHED_CREDENTIALS
 
+    _ensure_secure_linux_backend()
+
     for service_name in SERVICE_CANDIDATES:
         try:
             combined_value = (keyring.get_password(service_name, USERNAME_COMBINED) or "").strip()
@@ -132,6 +151,7 @@ def load_credentials(refresh: bool = False) -> Optional[AwsCredentials]:
 
 def save_credentials(credentials: AwsCredentials) -> None:
     """Write credentials to the system credential store."""
+    _ensure_secure_linux_backend()
     try:
         payload = json.dumps(
             {
@@ -158,6 +178,7 @@ def save_credentials(credentials: AwsCredentials) -> None:
 
 def clear_credentials() -> None:
     """Remove credentials from the system credential store if they exist."""
+    _ensure_secure_linux_backend()
     for service_name in SERVICE_CANDIDATES:
         for username in (USERNAME_COMBINED, USERNAME_ACCESS_KEY, USERNAME_SECRET_KEY, USERNAME_SESSION_TOKEN):
             try:

@@ -1,0 +1,26 @@
+name: Build Linux Mint
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include:
+          - app: s3Organizer
+            version: v2_38
+          - app: PowerS3Browser
+            version: v1_30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and desktop libraries
+        run: sudo apt-get update && sudo apt-get install -y python3-venv python3-tk xvfb libxft2 libfontconfig1
+      - name: Build and test packaged imports and GUI
+        run: bash build_linux_app.sh '${{ matrix.app }}' '${{ matrix.version }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-linux
+          path: dist/${{ matrix.app }}_${{ matrix.version }}-linux-x86_64.tar.gz
+          if-no-files-found: error

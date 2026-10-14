@@ -185,7 +185,13 @@ AUDIT_REPORT_COLUMNS = (
     *AUDIT_EXTENSION_FIELDS,
     *AUDIT_ART_FIELD_ORDER,
 )
-SIMPLIFIED_BULK_CHECKPOINT_DIR = Path.home() / "Library" / "Application Support" / APP_TITLE / "checkpoints"
+SIMPLIFIED_BULK_CHECKPOINT_DIR = (
+    Path.home() / "Library" / "Application Support" / APP_TITLE / "checkpoints"
+    if IS_MACOS else
+    Path(os.getenv("LOCALAPPDATA", str(Path.home() / ".local" / "state"))) / APP_TITLE / "checkpoints"
+    if IS_WINDOWS else
+    Path(os.getenv("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))) / APP_TITLE / "checkpoints"
+)
 
 
 def _configure_undo(widget: tk.Misc) -> None:
@@ -556,12 +562,12 @@ class SettingsDialog(tk.Toplevel):
         self.session_only_var = tk.BooleanVar(value=use_session_only)
         ttk.Checkbutton(
             self,
-            text="Use entered credentials for this app session only (do not save to Keychain)",
+            text=f"Use entered credentials for this app session only (do not save to {_credential_store_label()})",
             variable=self.session_only_var,
         ).grid(row=12, column=0, columnspan=3, sticky="w", padx=10, pady=(2, 2))
 
         credential_note = (
-            "Keychain mode: entered credentials are saved for reuse. "
+            f"{_credential_store_label()} mode: entered credentials are saved for reuse. "
             "Session-only mode: credentials are kept in memory and cleared when app closes."
         )
         ttk.Label(self, text=credential_note, wraplength=560).grid(
@@ -5564,7 +5570,7 @@ class S3CopyApp:
             elif IS_MACOS:
                 subprocess.Popen(["open", str(report_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                webbrowser.open(report_path.as_uri())
+                subprocess.Popen(["xdg-open", str(report_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as error:  # pylint: disable=broad-except
             self._append_log(f"Could not open report file: {error}")
             messagebox.showerror("Open Report Failed", f"Could not open report file: {error}", parent=self.root)
