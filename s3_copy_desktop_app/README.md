@@ -137,4 +137,3 @@ Build on Linux with `bash build_linux_app.sh s3Organizer v2_38` or
 `bash build_linux_app.sh PowerS3Browser v1_30`. The GitHub `Build Linux Mint`
 workflow builds both editions on Ubuntu 22.04 and checks their packaged imports
 and GUI startup under Xvfb. See `packaging/linux/README.txt` for setup details.
-
