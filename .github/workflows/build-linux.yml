@@ -1,8 +1,13 @@
 name: Build Linux Mint
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish verified packages to GitHub Releases
+        type: boolean
+        default: false
 permissions:
-  contents: read
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -24,3 +29,14 @@ jobs:
           name: ${{ matrix.app }}-linux
           path: dist/${{ matrix.app }}_${{ matrix.version }}-linux-x86_64.tar.gz
           if-no-files-found: error
+      - name: Publish verified Linux package
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_NAME: ${{ matrix.app }}
+          APP_VERSION: ${{ matrix.version }}
+        run: |
+          tag="${APP_NAME}_${APP_VERSION}-linux-x86_64"
+          gh release create "$tag" "dist/$tag.tar.gz" \
+            --target "$GITHUB_SHA" --title "$APP_NAME $APP_VERSION Linux Mint" \
+            --latest=false --notes 'For Linux Mint 21 and newer, 64-bit Intel/AMD. Extract the archive and open the executable, or run install.sh for a menu shortcut. Python, Tk, AWS and spreadsheet dependencies are bundled; AWS CLI is not required. Settings start blank and no credentials are included. Saved credentials use the encrypted login keyring. Regression tests and packaged dependency/GUI startup checks passed on Ubuntu 22.04. A real Mint desktop and live AWS transfers have not yet been tested.'
