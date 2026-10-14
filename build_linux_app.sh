@@ -11,6 +11,7 @@ esac
 [[ "$(uname -s)" == Linux ]] || { echo 'Build this package on Linux.' >&2; exit 1; }
 python3 -m venv .venv-linux
 .venv-linux/bin/python -m pip install -r s3_copy_desktop_app/requirements.txt 'pyinstaller>=6,<7' secretstorage jeepney
+.venv-linux/bin/python -m unittest discover -s tests -v
 .venv-linux/bin/pyinstaller --noconfirm --clean --onedir --name "$APP_NAME" \
   --collect-submodules keyring.backends --collect-all secretstorage --collect-all jeepney \
   --collect-data certifi --collect-all openpyxl "$LAUNCHER"
