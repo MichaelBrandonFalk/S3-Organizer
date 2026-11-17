@@ -159,7 +159,7 @@ dependencies. AWS CLI is optional. Settings start blank; credentials are never
 included. Saved credentials use the encrypted Linux login keyring; session-only
 mode is available when the keyring is unavailable.
 
-Build on Linux with `bash build_linux_app.sh s3Organizer v2_38` or
-`bash build_linux_app.sh PowerS3Browser v1_30`. The GitHub `Build Linux Mint`
+Build on Linux with `bash build_linux_app.sh s3Organizer v2_39` or
+`bash build_linux_app.sh PowerS3Browser v1_31`. The GitHub `Build Linux Mint`
 workflow builds both editions on Ubuntu 22.04 and checks their packaged imports
 and GUI startup under Xvfb. See `packaging/linux/README.txt` for setup details.
