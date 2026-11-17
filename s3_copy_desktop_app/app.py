@@ -59,6 +59,8 @@ from .validators import (
     validate_paths_not_identical,
     validate_user_input,
 )
+from .folder_upload import destination_key, validate_selection
+from .folder_upload_dialog import FolderUploadDialog
 
 APP_TITLE = os.getenv("S3_APP_TITLE", "s3Organizer")
 APP_FILE_SLUG = os.getenv("S3_APP_FILE_SLUG", "s3Organizer")
@@ -845,6 +847,10 @@ class BulkCopyDialog(tk.Toplevel):
         "desired_caption_name": "desired_caption_name",
     }
     DIRECT_UPLOAD_HEADER_ALIASES = {
+        "destination bucket": "destination_bucket",
+        "destination_bucket": "destination_bucket",
+        "destination prefix": "destination_prefix",
+        "destination_prefix": "destination_prefix",
         "title": "title",
         "title #": "title",
         "title number": "title",
@@ -1521,6 +1527,7 @@ class S3CopyApp:
             command=self.download_bulk_upload_template,
         )
         self.settings_menu.add_command(label="Settings...", command=self.open_settings)
+        self.settings_menu.add_command(label="Scan Folder Structure for Upload...", command=self.open_folder_upload)
         self.settings_menu.add_separator()
         self.settings_menu.add_command(label="Quit", command=self.root.destroy)
         menu_bar.add_cascade(label="App", menu=self.settings_menu)
@@ -1928,6 +1935,11 @@ class S3CopyApp:
         )
         bulk_upload_block.grid(row=0, column=0, sticky="ew")
         bulk_upload_block.columnconfigure(1, weight=1)
+        ttk.Button(
+            bulk_upload_block,
+            text="Scan Folder Structure & Select Upload Files...",
+            command=self.open_folder_upload,
+        ).grid(row=3, column=0, columnspan=4, sticky="w", pady=(10, 0))
         tk.Label(
             bulk_upload_block,
             text="CSV File",
@@ -3038,6 +3050,35 @@ class S3CopyApp:
         file_path = filedialog.askopenfilename(parent=self.root, title="Select Local Caption File")
         if file_path:
             self.local_caption_path_var.set(file_path)
+
+    def open_folder_upload(self) -> None:
+        if self._running:
+            messagebox.showerror("Folder Upload", "Wait for the current operation to finish.", parent=self.root)
+            return
+        FolderUploadDialog(self)
+
+    def _start_mapped_folder_upload(self, rows, bucket: str, prefix: str) -> bool:
+        if self._running:
+            messagebox.showerror("Folder Upload", "Another operation is running.", parent=self.root)
+            return False
+        try:
+            selected = validate_selection(rows, prefix)
+        except ValueError as error:
+            messagebox.showerror("Folder Upload", str(error), parent=self.root)
+            return False
+        items = []
+        for index, row in enumerate(selected, 1):
+            key = destination_key(prefix, row.folder, Path(row.local_path).name)
+            items.append(DirectUploadItem(
+                label=f"Folder file {index} - {row.relative_path}",
+                local_path=row.local_path,
+                destination_ref=S3ObjectRef(bucket=bucket, key=key),
+                destination_uri=f"s3://{bucket}/{key}",
+            ))
+        self._set_running(True)
+        self._append_log(f"Checking destinations for {len(items)} mapped folder upload file(s).")
+        threading.Thread(target=self._bulk_upload_worker, args=(items,), daemon=True).start()
+        return True
 
     def _browse_bulk_upload_csv(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -4950,6 +4991,8 @@ class S3CopyApp:
         label_prefix: str,
         local_file_path: str,
         desired_move_folder: str,
+        destination_bucket: str | None = None,
+        destination_prefix: str | None = None,
     ) -> tuple[list[str], list[DirectUploadItem]]:
         local_file_path = local_file_path.strip()
         raw_desired_move_folder = desired_move_folder.strip()
@@ -4968,15 +5011,17 @@ class S3CopyApp:
                 "(example: folder1/folder2)."
             )
 
-        dest_bucket = self.config.dest_bucket.strip()
+        dest_bucket = (self.config.dest_bucket if destination_bucket is None else destination_bucket).strip()
         if not dest_bucket:
             errors.append("Destination bucket is not configured. Open Settings.")
+        elif "/" in dest_bucket or "\\" in dest_bucket or any(char.isspace() for char in dest_bucket):
+            errors.append("Destination Bucket must be a bucket name, without a prefix or s3://.")
 
         if errors:
             return errors, []
 
         destination_key = join_key_parts(
-            self.config.dest_prefix,
+            self.config.dest_prefix if destination_prefix is None else destination_prefix,
             desired_move_folder,
             local_file_name,
         )
@@ -5236,7 +5281,12 @@ class S3CopyApp:
                     row_label,
                     values.get("local_file_path", ""),
                     values.get("desired_move_folder", ""),
+                    destination_bucket=values.get("destination_bucket"),
+                    destination_prefix=values.get("destination_prefix"),
                 )
+                if row_items and not upload_items:
+                    first_local_path = row_items[0].local_path
+                    first_destination_uri = row_items[0].destination_uri
                 if row_errors:
                     errors.extend([f"{row_label}: {error}" for error in row_errors])
                     continue
@@ -8609,6 +8659,9 @@ def main() -> None:
     _ = app
     if _is_tk_startup_smoke_requested():
         root.update_idletasks()
+        folder_dialog = FolderUploadDialog(app)
+        folder_dialog.update_idletasks()
+        folder_dialog._close()
         root.destroy()
         print("Packaged Tk startup smoke check passed.", file=sys.stderr, flush=True)
         return
