@@ -15,9 +15,9 @@ jobs:
       matrix:
         include:
           - app: s3Organizer
-            version: v2_39
+            version: v2_40
           - app: PowerS3Browser
-            version: v1_31
+            version: v1_32
     steps:
       - uses: actions/checkout@v4
       - name: Install build and desktop libraries

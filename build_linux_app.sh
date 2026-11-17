@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 APP_NAME="${1:-s3Organizer}"
-VERSION="${2:-v2_39}"
+VERSION="${2:-v2_40}"
 case "$APP_NAME" in
   s3Organizer) LAUNCHER=s3_copy_desktop_app_launcher.py ;;
   PowerS3Browser) LAUNCHER=power_s3_browser_launcher.py ;;

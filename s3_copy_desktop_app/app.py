@@ -61,6 +61,7 @@ from .validators import (
 )
 from .folder_upload import destination_key, validate_selection
 from .folder_upload_dialog import FolderUploadDialog
+from .mode_tabs import WrappedModeTabs
 
 APP_TITLE = os.getenv("S3_APP_TITLE", "s3Organizer")
 APP_FILE_SLUG = os.getenv("S3_APP_FILE_SLUG", "s3Organizer")
@@ -1727,8 +1728,9 @@ class S3CopyApp:
         self.bulk_copy_button.grid(row=0, column=1, sticky="e", padx=(0, 8))
         ttk.Button(top_row, text="Settings...", command=self.open_settings).grid(row=0, column=2, sticky="e")
 
-        self.mode_notebook = ttk.Notebook(input_frame)
-        self.mode_notebook.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        self.mode_tabs = WrappedModeTabs(input_frame)
+        self.mode_tabs.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        self.mode_notebook = self.mode_tabs.notebook
         self.mode_notebook.configure(height=188)
         self.s3_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
         self.direct_mode_frame = ttk.Frame(self.mode_notebook, padding=6)
@@ -1750,6 +1752,7 @@ class S3CopyApp:
             self.mode_notebook.add(self.folder_copy_mode_frame, text="Folder Copy")
         if self.bulk_folder_copy_mode_frame is not None:
             self.mode_notebook.add(self.bulk_folder_copy_mode_frame, text="Bulk Folder Copy")
+        self.mode_tabs.populate()
         self.s3_mode_frame.columnconfigure(0, weight=1)
         self.direct_mode_frame.columnconfigure(0, weight=1)
         self.bulk_upload_mode_frame.columnconfigure(0, weight=1)
@@ -2836,7 +2839,7 @@ class S3CopyApp:
         if self.inventory_exclusions_text is not None:
             self.inventory_exclusions_text.bind("<KeyRelease>", lambda *_: self._refresh_preview())
             self.inventory_exclusions_text.bind("<FocusOut>", lambda *_: self._refresh_preview())
-        self.mode_notebook.bind("<<NotebookTabChanged>>", lambda *_: self._refresh_preview())
+        self.mode_notebook.bind("<<NotebookTabChanged>>", lambda *_: self._refresh_preview(), add="+")
 
     def _log_credential_mode_on_startup(self) -> None:
         if self.use_session_only_credentials:
